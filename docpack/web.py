@@ -38,7 +38,7 @@ from pydantic import BaseModel
 class AppState:
     """Global application state."""
 
-    stage: str = "idle"  # idle, freezing, chunking, embedding, ready, error
+    stage: str = "idle"  # idle, freezing, chunking, embedding, summarizing, ready, error
     docpack_path: Path | None = None
     error: str | None = None
 
@@ -120,6 +120,33 @@ class SearchResponse(BaseModel):
     """Search response."""
 
     results: list[SearchResult]
+
+
+class AskRequest(BaseModel):
+    """Ask a question with citation-backed answer."""
+
+    query: str
+
+
+class CitationModel(BaseModel):
+    """A citation reference."""
+
+    id: int
+    file_path: str
+    chunk_index: int
+    quote: str
+    start_char: int | None = None
+    end_char: int | None = None
+
+
+class AskResponse(BaseModel):
+    """Answer with citations."""
+
+    answer: str
+    citations: list[CitationModel]
+    confidence: str
+    sources_retrieved: int
+    sources_used: int
 
 
 # =============================================================================
@@ -220,6 +247,24 @@ def _run_pipeline_sync(target_path: str, output_path: Path, progress_update_fn):
         stats = get_stats(conn)
         progress_update_fn("embedding_done", chunk_count, chunk_count, stats)
 
+    # Summarization phase - generate chunk summaries for better answers
+    if chunk_count > 0:
+        from docpack.summarize import summarize_all
+
+        progress_update_fn("summarizing", 0, chunk_count)
+
+        def summarize_progress(current: int, total: int):
+            progress_update_fn("summarizing", current, total)
+
+        try:
+            summarize_all(conn, verbose=False, progress_callback=summarize_progress)
+        except Exception as e:
+            # Summarization is optional - continue if it fails (e.g., no Ollama)
+            print(f"Summarization skipped: {e}")
+
+        stats = get_stats(conn)
+        progress_update_fn("summarizing_done", chunk_count, chunk_count, stats)
+
     conn.close()
     return stats
 
@@ -254,6 +299,8 @@ async def run_pipeline(target_path: str):
                 elif base_phase == "chunking":
                     state.stage = "embedding"
                 elif base_phase == "embedding":
+                    state.stage = "summarizing"
+                elif base_phase == "summarizing":
                     state.stage = "ready"
             else:
                 state.stage = phase
@@ -436,6 +483,60 @@ async def search(request: SearchRequest):
                 )
                 for r in results
             ]
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _ask_sync(docpack_path: Path, query: str):
+    """Run answer generation in a thread with its own connection."""
+    from docpack.answer import generate_answer
+
+    conn = sqlite3.connect(str(docpack_path), check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    try:
+        return generate_answer(conn, query)
+    finally:
+        conn.close()
+
+
+@app.post("/api/ask", response_model=AskResponse)
+async def ask(request: AskRequest):
+    """
+    Ask a question and get a citation-backed answer.
+
+    Returns a concise, accurate answer with citations to source material.
+    Only states facts directly supported by the documents.
+    """
+    if state.stage != "ready" or state.docpack_path is None:
+        raise HTTPException(status_code=400, detail="No docpack loaded. Process a directory first.")
+
+    if not request.query.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+
+    try:
+        result = await asyncio.to_thread(
+            _ask_sync,
+            state.docpack_path,
+            request.query,
+        )
+
+        return AskResponse(
+            answer=result.answer,
+            citations=[
+                CitationModel(
+                    id=c.id,
+                    file_path=c.file_path,
+                    chunk_index=c.chunk_index,
+                    quote=c.quote,
+                    start_char=c.start_char,
+                    end_char=c.end_char,
+                )
+                for c in result.citations
+            ],
+            confidence=result.confidence,
+            sources_retrieved=result.sources_retrieved,
+            sources_used=result.sources_used,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
