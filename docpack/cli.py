@@ -23,12 +23,23 @@ from __future__ import annotations
 import argparse
 import sys
 
+from docpack.runtime import RuntimeConfig, get_runtime_config, set_global_config
+
 
 def cmd_freeze(args: argparse.Namespace) -> int:
     """Handle freeze command."""
     from pathlib import Path
 
     from docpack.ingest import freeze
+
+    # Set up runtime config
+    config = get_runtime_config(
+        force_cpu=args.cpu,
+        embedding_model=args.model,
+        summarize_model=args.summarize_model,
+        verbose=args.verbose,
+    )
+    set_global_config(config)
 
     # Check if output file exists and prompt for overwrite
     output = args.output
@@ -56,6 +67,7 @@ def cmd_freeze(args: argparse.Namespace) -> int:
             skip_summarize=args.no_summarize,
             embedding_model=args.model,
             summarize_model=args.summarize_model,
+            config=config,
         )
         if not args.verbose:
             print(f"Created: {output_path}")
@@ -160,6 +172,14 @@ def cmd_recall(args: argparse.Namespace) -> int:
     from docpack.recall import recall
     from docpack.storage import init_db
 
+    # Set up runtime config
+    config = get_runtime_config(
+        force_cpu=args.cpu,
+        embedding_model=args.model,
+        verbose=False,
+    )
+    set_global_config(config)
+
     docpack_path = Path(args.docpack)
     if not docpack_path.exists():
         print(f"Error: File not found: {docpack_path}", file=sys.stderr)
@@ -171,8 +191,9 @@ def cmd_recall(args: argparse.Namespace) -> int:
             conn,
             args.query,
             k=args.k,
-            model_name=args.model,
+            model=args.model,
             threshold=args.threshold,
+            config=config,
         )
 
         if not results:
@@ -341,6 +362,13 @@ def cmd_web(args: argparse.Namespace) -> int:
 
     from docpack.web import run_server
 
+    # Set up runtime config
+    config = get_runtime_config(
+        force_cpu=args.cpu,
+        verbose=False,
+    )
+    set_global_config(config)
+
     # Find static directory
     static_dir = args.static_dir
     if not static_dir:
@@ -434,7 +462,7 @@ def main() -> int:
         "-m",
         "--model",
         default=None,
-        help="Embedding model (default: google/embeddinggemma-300m)",
+        help="Embedding model (default: nomic-embed-text via Ollama)",
     )
     freeze_parser.add_argument(
         "--summarize-model",
@@ -446,6 +474,11 @@ def main() -> int:
         "--yes",
         action="store_true",
         help="Overwrite existing output file without prompting",
+    )
+    freeze_parser.add_argument(
+        "--cpu",
+        action="store_true",
+        help="Force CPU-only mode (smaller batches, parallel processing)",
     )
 
     # info
@@ -480,7 +513,7 @@ def main() -> int:
     recall_parser.add_argument(
         "-m",
         "--model",
-        default="google/embeddinggemma-300m",
+        default="nomic-embed-text",
         help="Embedding model (must match freeze model)",
     )
     recall_parser.add_argument(
@@ -494,6 +527,11 @@ def main() -> int:
         "--full",
         action="store_true",
         help="Show full chunk text (don't truncate)",
+    )
+    recall_parser.add_argument(
+        "--cpu",
+        action="store_true",
+        help="Force CPU-only mode",
     )
 
     # serve
@@ -525,7 +563,7 @@ def main() -> int:
         "-m",
         "--model",
         default=None,
-        help="Embedding model (default: google/embeddinggemma-300m)",
+        help="Embedding model (default: nomic-embed-text via Ollama)",
     )
 
     # deck
@@ -561,6 +599,11 @@ def main() -> int:
         "--no-browser",
         action="store_true",
         help="Don't open browser automatically",
+    )
+    web_parser.add_argument(
+        "--cpu",
+        action="store_true",
+        help="Force CPU-only mode (smaller batches, parallel processing)",
     )
 
     # task

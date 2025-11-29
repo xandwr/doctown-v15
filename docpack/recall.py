@@ -11,7 +11,8 @@ import sqlite3
 import struct
 from dataclasses import dataclass
 
-from docpack.embed import embed_texts, get_model, DEFAULT_MODEL
+from docpack.embed import embed_texts, DEFAULT_MODEL
+from docpack.runtime import RuntimeConfig, get_global_config
 
 
 @dataclass
@@ -78,8 +79,9 @@ def recall(
     conn: sqlite3.Connection,
     query: str,
     k: int = 5,
-    model_name: str = DEFAULT_MODEL,
+    model: str = DEFAULT_MODEL,
     threshold: float | None = None,
+    config: RuntimeConfig | None = None,
 ) -> list[RecallResult]:
     """
     Semantic search against embedded chunks.
@@ -88,14 +90,17 @@ def recall(
         conn: Database connection to a docpack
         query: Natural language query string
         k: Number of results to return
-        model_name: Embedding model (must match model used during freeze)
+        model: Embedding model (must match model used during freeze)
         threshold: Optional minimum similarity score (0-1)
+        config: Runtime configuration
 
     Returns:
         List of RecallResult objects sorted by similarity (highest first)
     """
+    cfg = config or get_global_config()
+
     # Embed the query
-    query_embedding = embed_texts([query], model_name=model_name)[0]
+    query_embedding = embed_texts([query], model=model, config=cfg)[0]
 
     # Load all vectors
     vectors = load_all_vectors(conn)

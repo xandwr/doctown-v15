@@ -32,7 +32,7 @@ def build_batch_prompt(chunks: list[dict]) -> str:
     """Build a prompt for batch summarization."""
     chunk_texts = []
     for i, c in enumerate(chunks):
-        text = c['text'][:600] if len(c['text']) > 600 else c['text']
+        text = c['text'][:1024] if len(c['text']) > 1024 else c['text']
         chunk_texts.append(f"### {i+1}. {c['file_path']}\n{text}")
 
     return f"""Summarize each of the {len(chunks)} code chunks below in 1 sentence each. Return exactly {len(chunks)} summaries in order.
@@ -56,6 +56,8 @@ def summarize_batch(
         think=False,
     )
 
+    if response.message.content is None:
+        raise ValueError("No content returned from model response.")
     result = BatchSummaries.model_validate_json(response.message.content)
     return [item.s for item in result.summaries]
 

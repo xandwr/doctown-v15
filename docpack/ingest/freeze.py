@@ -18,6 +18,7 @@ from docpack.chunk import chunk_all
 from docpack.embed import embed_all
 from docpack.summarize import summarize_all
 from docpack.storage import init_db, insert_file, set_metadata
+from docpack.runtime import RuntimeConfig, get_global_config
 
 from .sources import DirectorySource, URLSource, ZipSource
 from .vfs import VirtualFS
@@ -97,6 +98,7 @@ def freeze(
     skip_summarize: bool = False,
     embedding_model: str | None = None,
     summarize_model: str | None = None,
+    config: RuntimeConfig | None = None,
 ) -> Path:
     """
     Freeze a target into a .docpack file.
@@ -229,9 +231,10 @@ def freeze(
                 if not skip_embedding and chunk_count > 0:
                     if verbose:
                         print("\nEmbedding chunks...")
-                    embed_kwargs = {"verbose": verbose}
+                    cfg = config or get_global_config()
+                    embed_kwargs: dict = {"verbose": verbose, "config": cfg}
                     if embedding_model:
-                        embed_kwargs["model_name"] = embedding_model
+                        embed_kwargs["model"] = embedding_model
                     embed_all(conn, **embed_kwargs)
 
                     # Summarize chunks with LLM

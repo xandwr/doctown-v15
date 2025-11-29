@@ -237,6 +237,8 @@ class ZipSource:
             self._zip_file = zipfile.ZipFile(io.BytesIO(path), "r")
             self._owns_file = True
         else:
+            if not isinstance(path, (str, os.PathLike)):
+                raise TypeError(f"Expected str or PathLike for zip path, got {type(path).__name__}")
             self._path = Path(path)
             if not self._path.is_file():
                 raise FileNotFoundError(f"Zip file not found: {self._path}")

@@ -66,14 +66,14 @@ def build_answer_prompt(query: str, sources: list[RecallResult]) -> str:
     source_texts = []
     for i, src in enumerate(sources):
         # Show the actual text content - truncate if very long
-        content = src.text[:800] if len(src.text) > 800 else src.text
+        content = src.text[:2048] if len(src.text) > 2048 else src.text
         source_texts.append(
             f"[{i}] {src.file_path}\n```\n{content}\n```"
         )
 
     sources_block = "\n\n".join(source_texts)
 
-    return f"""Answer the question based on the source documents below.
+    return f"""Answer the question using ONLY the source documents below.
 
 SOURCES:
 {sources_block}
@@ -81,10 +81,12 @@ SOURCES:
 QUESTION: {query}
 
 Instructions:
-- Answer directly and concisely (1-3 sentences)
+- Be SPECIFIC: include exact names, values, code snippets, or quotes from the sources
+- Keep it concise (1-4 sentences) but don't sacrifice important details
+- If the sources contain specific examples, numbers, or terminology, USE THEM
 - Include the source indices you used in "used_sources" (0-indexed numbers)
 - Set confidence: "high" if clearly answered, "medium" if partial, "low" if uncertain
-- If the sources genuinely don't help answer the question, set confidence to "none" and explain why"""
+- If sources don't help, set confidence to "none" and explain what's missing"""
 
 
 def generate_answer(
@@ -135,6 +137,8 @@ def generate_answer(
             think=False,  # Disable thinking mode for faster, direct responses
         )
 
+        if response.message.content is None:
+            raise ValueError("LLM response content is None")
         llm_answer = LLMAnswer.model_validate_json(response.message.content)
 
     except Exception as e:

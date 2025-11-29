@@ -164,8 +164,11 @@ def _run_pipeline_sync(target_path: str, output_path: Path, progress_update_fn):
     from docpack.embed import embed_all
     from docpack.ingest.freeze import detect_source
     from docpack.storage import init_db, insert_file, set_metadata, get_stats
+    from docpack.runtime import get_global_config
     from docpack import FORMAT_VERSION, __version__
     from datetime import datetime, timezone
+
+    config = get_global_config()
 
     # Initialize database with check_same_thread=False for safety
     conn = sqlite3.connect(str(output_path), check_same_thread=False)
@@ -243,7 +246,7 @@ def _run_pipeline_sync(target_path: str, output_path: Path, progress_update_fn):
         def embed_progress(current: int, total: int):
             progress_update_fn("embedding", current, total)
 
-        embed_all(conn, verbose=False, progress_callback=embed_progress)
+        embed_all(conn, config=config, verbose=False, progress_callback=embed_progress)
         stats = get_stats(conn)
         progress_update_fn("embedding_done", chunk_count, chunk_count, stats)
 

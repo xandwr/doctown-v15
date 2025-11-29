@@ -1,104 +1,140 @@
 """
-Embedding engine for generating vector embeddings from chunks.
+Embedding engine using Ollama.
 
-Uses sentence-transformers with lazy model loading for efficient
-batch inference.
+Uses Ollama's embedding API for unified CPU/GPU inference.
+Supports parallel processing for CPU mode optimization.
 """
 
 from __future__ import annotations
 
 import sqlite3
-from typing import TYPE_CHECKING, Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Callable
 
+from docpack.runtime import RuntimeConfig, get_global_config
 from docpack.storage import get_chunks, insert_vector, set_metadata
 
-if TYPE_CHECKING:
-    from sentence_transformers import SentenceTransformer
 
-# Default model - google/embeddinggemma-300m produces 1024-dim vectors
-DEFAULT_MODEL = "google/embeddinggemma-300m"
-
-# Global model cache for lazy loading
-_model_cache: dict[str, "SentenceTransformer"] = {}
-
-
-def get_model(model_name: str = DEFAULT_MODEL) -> "SentenceTransformer":
-    """
-    Lazy-load and cache the embedding model.
-
-    Args:
-        model_name: HuggingFace model identifier
-
-    Returns:
-        Loaded SentenceTransformer model
-    """
-    if model_name not in _model_cache:
-        from sentence_transformers import SentenceTransformer
-
-        _model_cache[model_name] = SentenceTransformer(model_name)
-
-    return _model_cache[model_name]
-
-
-def get_embedding_dim(model_name: str = DEFAULT_MODEL) -> int:
-    """
-    Get the embedding dimension for a model.
-
-    Args:
-        model_name: HuggingFace model identifier
-
-    Returns:
-        Number of dimensions in the embedding
-    """
-    model = get_model(model_name)
-    dim = model.get_sentence_embedding_dimension()
-    if dim is None:
-        raise ValueError(f"Model '{model_name}' did not return a valid embedding dimension.")
-    return dim
+# Default model - nomic-embed-text is fast and produces 768-dim vectors
+DEFAULT_MODEL = "nomic-embed-text"
 
 
 def embed_texts(
     texts: list[str],
-    model_name: str = DEFAULT_MODEL,
-    *,
-    batch_size: int = 32,
-    show_progress: bool = False,
+    model: str = DEFAULT_MODEL,
+    config: RuntimeConfig | None = None,
 ) -> list[list[float]]:
     """
-    Generate embeddings for a list of texts.
+    Generate embeddings for a list of texts using Ollama.
 
     Args:
         texts: List of text strings to embed
-        model_name: HuggingFace model identifier
-        batch_size: Number of texts to process at once
-        show_progress: Show progress bar during encoding
+        model: Ollama embedding model name
+        config: Runtime configuration (uses global if not provided)
 
     Returns:
         List of embedding vectors (as lists of floats)
     """
+    from ollama import embed
+
     if not texts:
         return []
 
-    model = get_model(model_name)
-    embeddings = model.encode(
-        texts,
-        batch_size=batch_size,
-        show_progress_bar=show_progress,
-        convert_to_numpy=True,
-    )
+    cfg = config or get_global_config()
 
-    # Convert numpy arrays to lists
-    return [emb.tolist() for emb in embeddings]
+    if cfg.force_cpu:
+        # CPU mode: smaller batches processed in parallel
+        return _embed_parallel(texts, model, cfg)
+    else:
+        # GPU mode: let Ollama batch efficiently
+        return _embed_batch(texts, model, cfg.embedding_batch_size)
+
+
+def _embed_batch(
+    texts: list[str],
+    model: str,
+    batch_size: int,
+) -> list[list[float]]:
+    """Embed texts in batches (GPU-optimized)."""
+    from ollama import embed
+
+    all_embeddings = []
+
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i : i + batch_size]
+        response = embed(model=model, input=batch)
+        all_embeddings.extend(response.embeddings)
+
+    return all_embeddings
+
+
+def _embed_parallel(
+    texts: list[str],
+    model: str,
+    config: RuntimeConfig,
+) -> list[list[float]]:
+    """
+    Embed texts using parallel workers (CPU-optimized).
+
+    Uses smaller batches across multiple threads to maximize
+    CPU utilization without overwhelming memory.
+    """
+    from ollama import embed
+
+    batch_size = config.embedding_batch_size  # Small batches for CPU
+    num_workers = config.parallel_workers
+
+    # Split into small batches
+    batches = []
+    for i in range(0, len(texts), batch_size):
+        batches.append((i, texts[i : i + batch_size]))
+
+    # Process in parallel
+    results: dict[int, list[list[float]]] = {}
+
+    def process_batch(batch_info: tuple[int, list[str]]) -> tuple[int, list[list[float]]]:
+        idx, batch_texts = batch_info
+        response = embed(model=model, input=batch_texts)
+        return idx, response.embeddings
+
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = [executor.submit(process_batch, b) for b in batches]
+
+        for future in as_completed(futures):
+            idx, embeddings = future.result()
+            results[idx] = embeddings
+
+    # Reassemble in order
+    all_embeddings = []
+    for i in range(0, len(texts), batch_size):
+        all_embeddings.extend(results[i])
+
+    return all_embeddings
+
+
+def get_embedding_dim(model: str = DEFAULT_MODEL) -> int:
+    """
+    Get the embedding dimension for a model.
+
+    Args:
+        model: Ollama embedding model name
+
+    Returns:
+        Number of dimensions in the embedding
+    """
+    from ollama import embed
+
+    # Embed a test string to get dimensions
+    response = embed(model=model, input=["test"])
+    return len(response.embeddings[0])
 
 
 def embed_chunks(
     conn: sqlite3.Connection,
     chunk_ids: list[int],
     texts: list[str],
-    model_name: str = DEFAULT_MODEL,
-    *,
-    batch_size: int = 32,
-    show_progress: bool = False,
+    model: str = DEFAULT_MODEL,
+    config: RuntimeConfig | None = None,
 ) -> int:
     """
     Embed a batch of chunks and store vectors in database.
@@ -107,9 +143,8 @@ def embed_chunks(
         conn: Database connection
         chunk_ids: List of chunk IDs corresponding to texts
         texts: List of chunk texts to embed
-        model_name: HuggingFace model identifier
-        batch_size: Number of texts to process at once
-        show_progress: Show progress bar during encoding
+        model: Ollama embedding model name
+        config: Runtime configuration
 
     Returns:
         Number of vectors inserted
@@ -120,13 +155,7 @@ def embed_chunks(
     if len(chunk_ids) != len(texts):
         raise ValueError("chunk_ids and texts must have same length")
 
-    embeddings = embed_texts(
-        texts,
-        model_name=model_name,
-        batch_size=batch_size,
-        show_progress=show_progress,
-    )
-
+    embeddings = embed_texts(texts, model=model, config=config)
     dims = len(embeddings[0]) if embeddings else 0
 
     for chunk_id, vector in zip(chunk_ids, embeddings):
@@ -137,9 +166,9 @@ def embed_chunks(
 
 def embed_all(
     conn: sqlite3.Connection,
-    model_name: str = DEFAULT_MODEL,
+    model: str = DEFAULT_MODEL,
+    config: RuntimeConfig | None = None,
     *,
-    batch_size: int = 32,
     verbose: bool = False,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> int:
@@ -148,14 +177,17 @@ def embed_all(
 
     Args:
         conn: Database connection
-        model_name: HuggingFace model identifier
-        batch_size: Number of chunks to process at once
+        model: Ollama embedding model name
+        config: Runtime configuration
         verbose: Print progress information
         progress_callback: Optional callback(current, total) for progress updates
 
     Returns:
         Total number of vectors created
     """
+    cfg = config or get_global_config()
+    batch_size = cfg.embedding_batch_size
+
     # Get all chunks
     chunks = get_chunks(conn)
 
@@ -165,7 +197,8 @@ def embed_all(
         return 0
 
     if verbose:
-        print(f"Embedding {len(chunks)} chunks with {model_name}...")
+        mode = "CPU (parallel)" if cfg.force_cpu else "GPU"
+        print(f"Embedding {len(chunks)} chunks with {model} [{mode}]...")
 
     # Prepare batch data
     chunk_ids = [c["id"] for c in chunks]
@@ -176,36 +209,46 @@ def embed_all(
     if progress_callback:
         progress_callback(0, total_chunks)
 
-    # Embed in batches
-    total_vectors = 0
-    dims = get_embedding_dim(model_name)
+    # Get embedding dimensions
+    dims = get_embedding_dim(model)
 
-    for i in range(0, len(texts), batch_size):
-        batch_ids = chunk_ids[i : i + batch_size]
-        batch_texts = texts[i : i + batch_size]
+    # Process based on mode
+    if cfg.force_cpu:
+        # CPU mode: process all at once with internal parallelism
+        embeddings = embed_texts(texts, model=model, config=cfg)
 
-        embeddings = embed_texts(
-            batch_texts,
-            model_name=model_name,
-            batch_size=batch_size,
-            show_progress=False,
-        )
-
-        for chunk_id, vector in zip(batch_ids, embeddings):
+        for chunk_id, vector in zip(chunk_ids, embeddings):
             insert_vector(conn, chunk_id, dims, vector)
-            total_vectors += 1
-
-        progress = min(i + batch_size, len(texts))
-
-        if verbose:
-            print(f"  Embedded {progress}/{len(texts)} chunks")
 
         if progress_callback:
-            progress_callback(progress, total_chunks)
+            progress_callback(total_chunks, total_chunks)
+
+        total_vectors = len(embeddings)
+    else:
+        # GPU mode: process in batches with progress updates
+        total_vectors = 0
+
+        for i in range(0, len(texts), batch_size):
+            batch_ids = chunk_ids[i : i + batch_size]
+            batch_texts = texts[i : i + batch_size]
+
+            embeddings = embed_texts(batch_texts, model=model, config=cfg)
+
+            for chunk_id, vector in zip(batch_ids, embeddings):
+                insert_vector(conn, chunk_id, dims, vector)
+                total_vectors += 1
+
+            progress = min(i + batch_size, len(texts))
+
+            if verbose:
+                print(f"  Embedded {progress}/{len(texts)} chunks")
+
+            if progress_callback:
+                progress_callback(progress, total_chunks)
 
     # Update metadata
     set_metadata(conn, "vector_count", str(total_vectors))
-    set_metadata(conn, "embedding_model", model_name)
+    set_metadata(conn, "embedding_model", model)
     set_metadata(conn, "embedding_dims", str(dims))
     set_metadata(conn, "stage", "embedded")
 
