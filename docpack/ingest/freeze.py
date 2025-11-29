@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from docpack import FORMAT_VERSION, __version__
 from docpack.chunk import chunk_all
 from docpack.embed import embed_all
+from docpack.summarize import summarize_all
 from docpack.storage import init_db, insert_file, set_metadata
 
 from .sources import DirectorySource, URLSource, ZipSource
@@ -93,14 +94,16 @@ def freeze(
     verbose: bool = False,
     skip_chunking: bool = False,
     skip_embedding: bool = False,
+    skip_summarize: bool = False,
     embedding_model: str | None = None,
+    summarize_model: str | None = None,
 ) -> Path:
     """
     Freeze a target into a .docpack file.
 
     Ingests all files from the target source (directory, zip, URL)
     and stores them in a SQLite database. By default, text files are
-    also chunked for later embedding.
+    also chunked, embedded, and summarized for semantic search.
 
     Args:
         target: Path or URL to ingest
@@ -109,7 +112,9 @@ def freeze(
         verbose: Print progress information
         skip_chunking: If True, skip the chunking step (raw ingestion only)
         skip_embedding: If True, skip the embedding step
+        skip_summarize: If True, skip LLM summarization (requires Ollama)
         embedding_model: HuggingFace model to use for embeddings
+        summarize_model: LLM model for summarization (default: qwen3:4b)
 
     Returns:
         Path to created .docpack file
@@ -123,6 +128,9 @@ def freeze(
 
         # Freeze a URL
         path = freeze("https://github.com/user/repo/archive/main.zip")
+
+        # Freeze with LLM summaries
+        path = freeze("./my-project", summarize_model="qwen3:4b")
     """
     # Determine output path
     if output:
@@ -199,8 +207,12 @@ def freeze(
                 set_metadata(conn, "config.skip_chunking", "true")
             if skip_embedding:
                 set_metadata(conn, "config.skip_embedding", "true")
+            if skip_summarize:
+                set_metadata(conn, "config.skip_summarize", "true")
             if embedding_model:
                 set_metadata(conn, "config.embedding_model", embedding_model)
+            if summarize_model:
+                set_metadata(conn, "config.summarize_model", summarize_model)
 
             if verbose:
                 print(f"\nFroze {file_count} files ({total_bytes:,} bytes)")
@@ -221,6 +233,20 @@ def freeze(
                     if embedding_model:
                         embed_kwargs["model_name"] = embedding_model
                     embed_all(conn, **embed_kwargs)
+
+                    # Summarize chunks with LLM
+                    if not skip_summarize:
+                        if verbose:
+                            print("\nSummarizing chunks with LLM...")
+                        summarize_kwargs = {"verbose": verbose}
+                        if summarize_model:
+                            summarize_kwargs["model"] = summarize_model
+                        try:
+                            summarize_all(conn, **summarize_kwargs)
+                        except Exception as e:
+                            if verbose:
+                                print(f"Warning: Summarization failed: {e}")
+                                print("Continuing without summaries (Ollama may not be running)")
             else:
                 set_metadata(conn, "stage", "frozen")  # No chunks yet
 

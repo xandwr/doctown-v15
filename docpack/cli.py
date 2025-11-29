@@ -26,17 +26,36 @@ import sys
 
 def cmd_freeze(args: argparse.Namespace) -> int:
     """Handle freeze command."""
+    from pathlib import Path
+
     from docpack.ingest import freeze
+
+    # Check if output file exists and prompt for overwrite
+    output = args.output
+    if output and not args.temp:
+        output_path = Path(output)
+        if output_path.exists():
+            if args.yes:
+                output_path.unlink()
+            else:
+                response = input(f"'{output}' exists. Overwrite? [y/N] ").strip().lower()
+                if response in ("y", "yes"):
+                    output_path.unlink()
+                else:
+                    print("Aborted.")
+                    return 1
 
     try:
         output_path = freeze(
             args.target,
-            output=args.output,
+            output=output,
             use_temp=args.temp,
             verbose=args.verbose,
             skip_chunking=args.no_chunk,
             skip_embedding=args.no_embed,
+            skip_summarize=args.no_summarize,
             embedding_model=args.model,
+            summarize_model=args.summarize_model,
         )
         if not args.verbose:
             print(f"Created: {output_path}")
@@ -102,6 +121,13 @@ def cmd_info(args: argparse.Namespace) -> int:
             print(f"  Model: {metadata.get('embedding_model', 'N/A')}")
             print(f"  Dimensions: {metadata.get('embedding_dims', 'N/A')}")
 
+        # Summary info
+        if "summary_model" in metadata:
+            print()
+            print("Summaries:")
+            print(f"  Model: {metadata.get('summary_model', 'N/A')}")
+            print(f"  Count: {metadata.get('summary_count', 'N/A')}")
+
         # Config flags
         config_keys = [k for k in metadata if k.startswith("config.")]
         if config_keys:
@@ -156,6 +182,10 @@ def cmd_recall(args: argparse.Namespace) -> int:
         for i, r in enumerate(results, 1):
             print(f"\n[{i}] {r.file_path} (chunk {r.chunk_index}) — score: {r.score:.4f}")
             print("-" * 60)
+            # Show summary if available
+            if r.summary:
+                print(f"Summary: {r.summary}")
+                print("-" * 60)
             # Truncate long text for display
             text = r.text
             if len(text) > 500 and not args.full:
@@ -396,10 +426,26 @@ def main() -> int:
         help="Skip embedding (chunking only)",
     )
     freeze_parser.add_argument(
+        "--no-summarize",
+        action="store_true",
+        help="Skip LLM summarization (requires Ollama with qwen3:4b)",
+    )
+    freeze_parser.add_argument(
         "-m",
         "--model",
         default=None,
         help="Embedding model (default: google/embeddinggemma-300m)",
+    )
+    freeze_parser.add_argument(
+        "--summarize-model",
+        default=None,
+        help="LLM model for summaries (default: qwen3:4b via Ollama)",
+    )
+    freeze_parser.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Overwrite existing output file without prompting",
     )
 
     # info

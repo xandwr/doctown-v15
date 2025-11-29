@@ -26,6 +26,7 @@ class RecallResult:
     score: float
     start_char: int | None = None
     end_char: int | None = None
+    summary: str | None = None
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -119,7 +120,7 @@ def recall(
         cursor = conn.execute(
             """
             SELECT c.id, c.file_id, c.chunk_index, c.text, c.start_char, c.end_char,
-                   f.path
+                   c.summary, f.path
             FROM chunks c
             JOIN files f ON c.file_id = f.id
             WHERE c.id = ?
@@ -138,6 +139,7 @@ def recall(
                     score=score,
                     start_char=row["start_char"],
                     end_char=row["end_char"],
+                    summary=row["summary"],
                 )
             )
 

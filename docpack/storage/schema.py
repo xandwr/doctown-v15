@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     token_count INTEGER,
     start_char INTEGER,
     end_char INTEGER,
+    summary TEXT,
     FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
     UNIQUE(file_id, chunk_index)
 );

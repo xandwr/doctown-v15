@@ -66,12 +66,12 @@ def get_chunks(
 
     Returns:
         List of chunk dictionaries with keys:
-        id, file_id, chunk_index, text, token_count, start_char, end_char
+        id, file_id, chunk_index, text, token_count, start_char, end_char, summary
     """
     if file_id is not None:
         cursor = conn.execute(
             """
-            SELECT id, file_id, chunk_index, text, token_count, start_char, end_char
+            SELECT id, file_id, chunk_index, text, token_count, start_char, end_char, summary
             FROM chunks
             WHERE file_id = ?
             ORDER BY chunk_index
@@ -81,7 +81,7 @@ def get_chunks(
     else:
         cursor = conn.execute(
             """
-            SELECT id, file_id, chunk_index, text, token_count, start_char, end_char
+            SELECT id, file_id, chunk_index, text, token_count, start_char, end_char, summary
             FROM chunks
             ORDER BY file_id, chunk_index
             """
