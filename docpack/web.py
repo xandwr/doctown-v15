@@ -23,7 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -58,6 +59,10 @@ class AppState:
     phase_start_time: float | None = None
     phase_times: dict[str, float] = field(default_factory=dict)  # phase -> duration in seconds
 
+    # File staging for uploads
+    stage_dir: Path | None = None
+    staged_files: dict[str, int] = field(default_factory=dict)  # relative_path -> size_bytes
+
     def get_connection(self) -> sqlite3.Connection | None:
         """Get a new database connection (thread-safe)."""
         if self.docpack_path is None:
@@ -65,6 +70,14 @@ class AppState:
         conn = sqlite3.connect(str(self.docpack_path), check_same_thread=False)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def clear_staging(self):
+        """Clear all staged files and remove temp directory."""
+        import shutil
+        if self.stage_dir and self.stage_dir.exists():
+            shutil.rmtree(self.stage_dir, ignore_errors=True)
+        self.stage_dir = None
+        self.staged_files = {}
 
 
 # Global state instance
@@ -117,9 +130,25 @@ def update_progress(phase: str, current: int, total: int):
 
 
 class ProcessRequest(BaseModel):
-    """Request to process a directory."""
+    """Request to process a directory or staged files."""
 
-    path: str
+    path: str | None = None
+    use_staged: bool = False
+
+
+class StagedFileModel(BaseModel):
+    """A staged file."""
+
+    name: str
+    size: int
+
+
+class StagedFilesResponse(BaseModel):
+    """Response with staged files list."""
+
+    files: list[StagedFileModel]
+    total_size: int
+    file_count: int
 
 
 class SearchRequest(BaseModel):
@@ -408,6 +437,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Add CORS middleware for mobile/cross-origin access
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # =============================================================================
 # API Routes
@@ -422,6 +460,110 @@ async def get_status():
         "stats": state.stats,
         "error": state.error,
     }
+
+
+# =============================================================================
+# File Staging API
+# =============================================================================
+
+
+@app.post("/api/upload", response_model=StagedFilesResponse)
+async def upload_files(files: list[UploadFile]):
+    """
+    Upload files to staging area for processing.
+
+    Accepts multiple files via multipart/form-data.
+    Files are stored temporarily until processing begins.
+    """
+    print(f"[upload] Received upload request with {len(files)} file(s)")
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+
+    # Create staging directory if needed
+    if state.stage_dir is None:
+        state.stage_dir = Path(tempfile.mkdtemp(prefix="doctown-stage-"))
+
+    for file in files:
+        if not file.filename:
+            continue
+
+        # Use the filename directly from the File object
+        relative_path = file.filename.lstrip("/")
+
+        # Create parent directories if needed
+        file_path = state.stage_dir / relative_path
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write file content
+        print(f"[upload] Reading file: {relative_path}")
+        content = await file.read()
+        print(f"[upload] Writing file: {relative_path} ({len(content)} bytes)")
+        file_path.write_bytes(content)
+
+        # Track in state
+        state.staged_files[relative_path] = len(content)
+
+    # Build response
+    staged_list = [
+        StagedFileModel(name=name, size=size)
+        for name, size in sorted(state.staged_files.items())
+    ]
+
+    print(f"[upload] Upload complete: {len(state.staged_files)} files staged")
+    return StagedFilesResponse(
+        files=staged_list,
+        total_size=sum(state.staged_files.values()),
+        file_count=len(state.staged_files),
+    )
+
+
+@app.get("/api/staged", response_model=StagedFilesResponse)
+async def get_staged_files():
+    """Get list of currently staged files."""
+    staged_list = [
+        StagedFileModel(name=name, size=size)
+        for name, size in sorted(state.staged_files.items())
+    ]
+
+    return StagedFilesResponse(
+        files=staged_list,
+        total_size=sum(state.staged_files.values()),
+        file_count=len(state.staged_files),
+    )
+
+
+@app.delete("/api/staged/{file_path:path}")
+async def remove_staged_file(file_path: str):
+    """Remove a single file from staging."""
+    if file_path not in state.staged_files:
+        raise HTTPException(status_code=404, detail=f"File not staged: {file_path}")
+
+    # Remove from disk
+    if state.stage_dir:
+        actual_path = state.stage_dir / file_path
+        if actual_path.exists():
+            actual_path.unlink()
+
+            # Clean up empty parent directories
+            parent = actual_path.parent
+            while parent != state.stage_dir:
+                if not any(parent.iterdir()):
+                    parent.rmdir()
+                    parent = parent.parent
+                else:
+                    break
+
+    # Remove from tracking
+    del state.staged_files[file_path]
+
+    return {"status": "removed", "name": file_path}
+
+
+@app.delete("/api/staged")
+async def clear_staged_files():
+    """Clear all staged files."""
+    state.clear_staging()
+    return {"status": "cleared"}
 
 
 @app.get("/api/events")
@@ -501,14 +643,25 @@ async def sse_events():
 
 @app.post("/api/process")
 async def process_directory(request: ProcessRequest):
-    """Start processing a directory."""
-    # Validate path
-    path = Path(request.path).expanduser().resolve()
-    if not path.exists():
-        raise HTTPException(status_code=400, detail=f"Path not found: {request.path}")
-
+    """Start processing a directory or staged files."""
     if state.stage not in ("idle", "ready", "error"):
         raise HTTPException(status_code=409, detail="Processing already in progress")
+
+    # Determine source path
+    if request.use_staged:
+        # Use staged files
+        if not state.stage_dir or not state.staged_files:
+            raise HTTPException(status_code=400, detail="No files staged for processing")
+        process_path = state.stage_dir
+        source_desc = f"staged files ({len(state.staged_files)} files)"
+    elif request.path:
+        # Use filesystem path (existing behavior)
+        process_path = Path(request.path).expanduser().resolve()
+        if not process_path.exists():
+            raise HTTPException(status_code=400, detail=f"Path not found: {request.path}")
+        source_desc = str(process_path)
+    else:
+        raise HTTPException(status_code=400, detail="Either 'path' or 'use_staged' must be provided")
 
     # Clean up old docpack if any
     if state.docpack_path and state.docpack_path.exists():
@@ -519,9 +672,9 @@ async def process_directory(request: ProcessRequest):
     state.docpack_path = None
 
     # Start pipeline in background
-    asyncio.create_task(run_pipeline(str(path)))
+    asyncio.create_task(run_pipeline(str(process_path)))
 
-    return {"status": "started", "path": str(path)}
+    return {"status": "started", "path": source_desc}
 
 
 def _search_sync(docpack_path: Path, query: str, k: int):

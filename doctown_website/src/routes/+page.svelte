@@ -46,9 +46,33 @@
 		timing: Timing | null;
 	}
 
+	interface StagedFile {
+		name: string;
+		size: number;
+	}
+
+	interface StagedFilesResponse {
+		files: StagedFile[];
+		total_size: number;
+		file_count: number;
+	}
+
 	// State
 	let stage = $state<string>('idle');
 	let directoryPath = $state('');
+	let debugLog = $state<string[]>([]);
+
+	function log(msg: string) {
+		console.log(msg);
+		debugLog = [...debugLog.slice(-10), msg];
+	}
+
+	// File staging state
+	let stagedFiles = $state<StagedFile[]>([]);
+	let stagedTotalSize = $state(0);
+	let isUploading = $state(false);
+	let isDragOver = $state(false);
+	let showAdvanced = $state(false);
 	let searchQuery = $state('');
 	let answerResponse = $state<AnswerResponse | null>(null);
 	let progress = $state<Progress>({ phase: '', current: 0, total: 0 });
@@ -169,18 +193,28 @@
 
 	// Handlers
 	async function handleProcess() {
-		if (!directoryPath.trim()) return;
-
 		error = null;
 		answerResponse = null;
 		finalPipelineTime = null;
 		timing = null;
 
 		try {
+			let body: { path?: string; use_staged?: boolean };
+
+			if (stagedFiles.length > 0) {
+				// Process staged files
+				body = { use_staged: true };
+			} else if (directoryPath.trim()) {
+				// Process filesystem path (advanced mode)
+				body = { path: directoryPath.trim() };
+			} else {
+				return;
+			}
+
 			const response = await fetch('/api/process', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ path: directoryPath.trim() })
+				body: JSON.stringify(body)
 			});
 
 			if (!response.ok) {
@@ -191,6 +225,118 @@
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Network error';
 		}
+	}
+
+	// File upload handlers
+	async function uploadFiles(files: FileList | File[]) {
+		if (!files || files.length === 0) return;
+
+		isUploading = true;
+		error = null;
+
+		try {
+			log('uploadFiles started');
+
+			const formData = new FormData();
+			let totalSize = 0;
+			for (let i = 0; i < files.length; i++) {
+				const file = files[i];
+				log(`append ${i}: ${file.name}`);
+				formData.append('files', file);
+				totalSize += file.size;
+			}
+			log(`sending ${files.length} files (${totalSize} bytes)`);
+
+			// Use absolute URL to ensure we hit the right server
+			const baseUrl = window.location.origin;
+			log(`POST to ${baseUrl}/api/upload`);
+
+			const response = await fetch(`${baseUrl}/api/upload`, {
+				method: 'POST',
+				body: formData
+			});
+			log(`response: ${response.status} ${response.statusText}`);
+
+			if (!response.ok) {
+				const data = await response.json();
+				error = data.detail || 'Upload failed';
+				return;
+			}
+
+			const data: StagedFilesResponse = await response.json();
+			stagedFiles = data.files;
+			stagedTotalSize = data.total_size;
+			console.log(`[upload] Success: ${data.file_count} files staged`);
+		} catch (e) {
+			log(`error: ${e}`);
+			error = e instanceof Error ? e.message : 'Upload failed';
+		} finally {
+			isUploading = false;
+		}
+	}
+
+	async function removeFile(fileName: string) {
+		try {
+			const response = await fetch(`/api/staged/${encodeURIComponent(fileName)}`, {
+				method: 'DELETE'
+			});
+
+			if (response.ok) {
+				stagedFiles = stagedFiles.filter(f => f.name !== fileName);
+				stagedTotalSize = stagedFiles.reduce((sum, f) => sum + f.size, 0);
+			}
+		} catch (e) {
+			console.error('Failed to remove file:', e);
+		}
+	}
+
+	async function clearAllFiles() {
+		try {
+			const response = await fetch('/api/staged', {
+				method: 'DELETE'
+			});
+
+			if (response.ok) {
+				stagedFiles = [];
+				stagedTotalSize = 0;
+			}
+		} catch (e) {
+			console.error('Failed to clear files:', e);
+		}
+	}
+
+	function handleFileInput(e: Event) {
+		try {
+			log('handleFileInput triggered');
+			const input = e.target as HTMLInputElement;
+			log(`files: ${input.files?.length ?? 'null'}`);
+			if (input.files && input.files.length > 0) {
+				log(`uploading ${input.files.length} files`);
+				uploadFiles(input.files);
+			}
+		} catch (err) {
+			log(`handleFileInput error: ${err}`);
+			error = err instanceof Error ? err.message : 'Failed to read files';
+		}
+	}
+
+	function handleDrop(e: DragEvent) {
+		e.preventDefault();
+		isDragOver = false;
+
+		if (e.dataTransfer?.files) {
+			uploadFiles(e.dataTransfer.files);
+		}
+	}
+
+	function handleDragOver(e: DragEvent) {
+		e.preventDefault();
+		isDragOver = true;
+	}
+
+	function handleDragLeave(e: DragEvent) {
+		e.preventDefault();
+		isDragOver = false;
 	}
 
 	async function handleAsk() {
@@ -243,7 +389,7 @@
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter') {
 			if (stage === 'idle' || stage === 'error') {
-				if (directoryPath.trim() && !isProcessing) {
+				if ((stagedFiles.length > 0 || directoryPath.trim()) && !isProcessing && !isUploading) {
 					handleProcess();
 				}
 			} else if (stage === 'ready') {
@@ -252,6 +398,20 @@
 				}
 			}
 		}
+	}
+
+	function getFileIcon(fileName: string): string {
+		const ext = fileName.split('.').pop()?.toLowerCase() || '';
+		const codeExts = ['js', 'ts', 'jsx', 'tsx', 'py', 'rb', 'go', 'rs', 'java', 'c', 'cpp', 'h', 'cs'];
+		const docExts = ['md', 'txt', 'rst', 'doc', 'docx', 'pdf'];
+		const dataExts = ['json', 'yaml', 'yml', 'xml', 'csv', 'toml'];
+		const webExts = ['html', 'css', 'scss', 'sass', 'vue', 'svelte'];
+
+		if (codeExts.includes(ext)) return 'code';
+		if (docExts.includes(ext)) return 'doc';
+		if (dataExts.includes(ext)) return 'data';
+		if (webExts.includes(ext)) return 'web';
+		return 'file';
 	}
 
 	function formatSize(bytes: number): string {
@@ -315,26 +475,162 @@
 			</div>
 		{/if}
 
-		<!-- Path Input (show when idle) -->
+		<!-- File Upload UI (show when idle) -->
 		{#if stage === 'idle' || stage === 'error'}
-			<div class="w-full mt-4">
-				<label class="text-white/60 text-sm mb-2 block">Load your documents</label>
-				<div class="flex gap-3">
+			<div class="w-full mt-4 space-y-4">
+				<!-- Drop zone -->
+				<div
+					class="relative border-2 border-dashed rounded-2xl p-8 text-center transition-all cursor-pointer
+						{isDragOver ? 'border-blue-400 bg-blue-500/10' : 'border-white/20 hover:border-white/40 hover:bg-white/5'}"
+					ondrop={handleDrop}
+					ondragover={handleDragOver}
+					ondragleave={handleDragLeave}
+					role="button"
+					tabindex="0"
+					onkeydown={(e) => e.key === 'Enter' && document.getElementById('file-input')?.click()}
+					onclick={() => document.getElementById('file-input')?.click()}
+				>
+					{#if isUploading}
+						<div class="flex flex-col items-center gap-3">
+							<svg class="h-8 w-8 animate-spin text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+								<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+								<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+							</svg>
+							<span class="text-white/60">Uploading files...</span>
+						</div>
+					{:else}
+						<div class="flex flex-col items-center gap-3">
+							<svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 text-white/40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+							</svg>
+							<div>
+								<p class="text-white/70 text-lg">Drop files here or tap to browse</p>
+								<p class="text-white/40 text-sm mt-1">Upload documents, code, or any text files</p>
+							</div>
+						</div>
+					{/if}
+
+					<!-- Hidden file inputs -->
 					<input
-						type="text"
-						bind:value={directoryPath}
-						onkeydown={handleKeydown}
-						placeholder="/path/to/your/project"
-						disabled={isProcessing}
-						class="flex-1 px-5 py-4 text-lg bg-white/10 backdrop-blur-sm border border-white/20 rounded-xl text-white placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all disabled:opacity-50"
+						id="file-input"
+						type="file"
+						multiple
+						class="hidden"
+						onchange={handleFileInput}
 					/>
+				</div>
+
+				<!-- Folder upload button (desktop browsers) -->
+				<div class="flex gap-3 justify-center">
+					<label class="px-4 py-2 bg-white/10 hover:bg-white/15 rounded-lg text-white/70 text-sm cursor-pointer transition-colors">
+						<input
+							type="file"
+							multiple
+							webkitdirectory
+							class="hidden"
+							onchange={handleFileInput}
+						/>
+						Upload Folder
+					</label>
+				</div>
+
+				<!-- Staged files list -->
+				{#if stagedFiles.length > 0}
+					<div class="bg-white/5 rounded-xl p-4 space-y-2">
+						<div class="flex items-center justify-between mb-3">
+							<span class="text-white/60 text-sm">
+								{stagedFiles.length} file{stagedFiles.length !== 1 ? 's' : ''} staged ({formatSize(stagedTotalSize)})
+							</span>
+							<button
+								onclick={clearAllFiles}
+								class="text-red-400/70 hover:text-red-400 text-xs transition-colors"
+							>
+								Clear all
+							</button>
+						</div>
+
+						<div class="max-h-48 overflow-y-auto space-y-1">
+							{#each stagedFiles as file}
+								<div class="flex items-center gap-3 py-1.5 px-2 rounded-lg hover:bg-white/5 group">
+									<!-- File icon -->
+									<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-white/40 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+										{#if getFileIcon(file.name) === 'code'}
+											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+										{:else if getFileIcon(file.name) === 'doc'}
+											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+										{:else if getFileIcon(file.name) === 'data'}
+											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+										{:else}
+											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+										{/if}
+									</svg>
+
+									<!-- File name -->
+									<span class="flex-1 text-white/70 text-sm truncate" title={file.name}>
+										{file.name}
+									</span>
+
+									<!-- File size -->
+									<span class="text-white/30 text-xs shrink-0">
+										{formatSize(file.size)}
+									</span>
+
+									<!-- Remove button -->
+									<button
+										onclick={() => removeFile(file.name)}
+										class="opacity-0 group-hover:opacity-100 text-white/30 hover:text-red-400 transition-all p-1"
+										title="Remove file"
+									>
+										<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+										</svg>
+									</button>
+								</div>
+							{/each}
+						</div>
+
+						<!-- Process button -->
+						<button
+							onclick={handleProcess}
+							disabled={isProcessing || isUploading}
+							class="w-full mt-3 px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 disabled:cursor-not-allowed text-white font-medium rounded-xl transition-colors"
+						>
+							Process {stagedFiles.length} file{stagedFiles.length !== 1 ? 's' : ''}
+						</button>
+					</div>
+				{/if}
+
+				<!-- Advanced: Path input (collapsed by default) -->
+				<div class="pt-2">
 					<button
-						onclick={handleProcess}
-						disabled={!directoryPath.trim() || isProcessing}
-						class="px-6 py-4 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 disabled:cursor-not-allowed text-white font-medium rounded-xl transition-colors"
+						onclick={() => showAdvanced = !showAdvanced}
+						class="text-white/30 hover:text-white/50 text-xs flex items-center gap-1 transition-colors mx-auto"
 					>
-						Load
+						<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 transition-transform {showAdvanced ? 'rotate-90' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+						</svg>
+						Advanced: Load from server path
 					</button>
+
+					{#if showAdvanced}
+						<div class="mt-3 flex gap-3">
+							<input
+								type="text"
+								bind:value={directoryPath}
+								onkeydown={handleKeydown}
+								placeholder="/path/to/your/project"
+								disabled={isProcessing || stagedFiles.length > 0}
+								class="flex-1 px-4 py-3 text-sm bg-white/10 backdrop-blur-sm border border-white/20 rounded-xl text-white placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all disabled:opacity-50"
+							/>
+							<button
+								onclick={handleProcess}
+								disabled={!directoryPath.trim() || isProcessing || stagedFiles.length > 0}
+								class="px-5 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-xl transition-colors"
+							>
+								Load
+							</button>
+						</div>
+					{/if}
 				</div>
 			</div>
 		{/if}
@@ -539,10 +835,18 @@
 		{/if}
 
 		<!-- Empty state hint -->
-		{#if stage === 'idle'}
-			<div class="text-center text-white/40 mt-6">
-				<p class="text-sm">Load a directory to create a searchable knowledge base.</p>
-				<p class="mt-2 text-xs text-white/30">Example: <code class="bg-white/10 px-2 py-0.5 rounded">~/Documents/my-project</code></p>
+		{#if stage === 'idle' && stagedFiles.length === 0}
+			<div class="text-center text-white/40 mt-2">
+				<p class="text-sm">Upload files to create a searchable knowledge base.</p>
+			</div>
+		{/if}
+
+		<!-- Debug log (visible on screen) -->
+		{#if debugLog.length > 0}
+			<div class="w-full mt-4 p-3 bg-black/50 rounded-lg font-mono text-xs text-green-400 max-h-40 overflow-y-auto">
+				{#each debugLog as msg}
+					<div>{msg}</div>
+				{/each}
 			</div>
 		{/if}
 
