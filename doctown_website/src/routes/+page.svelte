@@ -63,6 +63,13 @@
 	let queryElapsed = $state<number | null>(null);
 	let queryTimerInterval = $state<ReturnType<typeof setInterval> | null>(null);
 
+	// Processing timing (real-time local counter)
+	let processingStartTime = $state<number | null>(null);
+	let phaseStartTime = $state<number | null>(null);
+	let localPhaseElapsed = $state<number>(0);
+	let localPipelineElapsed = $state<number>(0);
+	let processingTimerInterval = $state<ReturnType<typeof setInterval> | null>(null);
+
 	// Derived
 	let progressPercent = $derived(
 		progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0
@@ -93,6 +100,54 @@
 				if (prevStage !== 'ready' && data.stage === 'ready' && data.timing.pipeline_elapsed) {
 					finalPipelineTime = data.timing.pipeline_elapsed;
 				}
+				// Also calculate from phase_times if we're in ready state and don't have finalPipelineTime yet
+				if (data.stage === 'ready' && !finalPipelineTime && data.timing.phase_times) {
+					const totalFromPhases = Object.values(data.timing.phase_times).reduce((sum, t) => sum + t, 0);
+					if (totalFromPhases > 0) {
+						finalPipelineTime = totalFromPhases;
+					}
+				}
+			}
+
+			// Handle processing timer
+			const isNowProcessing = ['freezing', 'chunking', 'embedding', 'summarizing'].includes(data.stage);
+			const wasProcessing = ['freezing', 'chunking', 'embedding', 'summarizing'].includes(prevStage);
+			const timerRunning = processingTimerInterval !== null;
+
+			// Start timer when processing begins OR if we connect while already processing
+			if (isNowProcessing && (!wasProcessing || !timerRunning)) {
+				// Use server's elapsed time if available to sync up
+				const serverPipelineElapsed = data.timing?.pipeline_elapsed ?? 0;
+				const serverPhaseElapsed = data.timing?.phase_elapsed ?? 0;
+
+				processingStartTime = performance.now() - (serverPipelineElapsed * 1000);
+				phaseStartTime = performance.now() - (serverPhaseElapsed * 1000);
+				localPipelineElapsed = serverPipelineElapsed;
+				localPhaseElapsed = serverPhaseElapsed;
+
+				if (processingTimerInterval) clearInterval(processingTimerInterval);
+				processingTimerInterval = setInterval(() => {
+					if (processingStartTime !== null) {
+						localPipelineElapsed = (performance.now() - processingStartTime) / 1000;
+					}
+					if (phaseStartTime !== null) {
+						localPhaseElapsed = (performance.now() - phaseStartTime) / 1000;
+					}
+				}, 100);
+			}
+
+			// Reset phase timer on phase change (but only if timer is running)
+			if (isNowProcessing && wasProcessing && data.stage !== prevStage && timerRunning) {
+				phaseStartTime = performance.now();
+				localPhaseElapsed = 0;
+			}
+
+			// Stop timer when processing ends
+			if (!isNowProcessing && wasProcessing) {
+				if (processingTimerInterval) {
+					clearInterval(processingTimerInterval);
+					processingTimerInterval = null;
+				}
 			}
 		};
 
@@ -102,9 +157,12 @@
 
 		return () => {
 			eventSource.close();
-			// Clean up query timer
+			// Clean up timers
 			if (queryTimerInterval) {
 				clearInterval(queryTimerInterval);
+			}
+			if (processingTimerInterval) {
+				clearInterval(processingTimerInterval);
 			}
 		};
 	});
@@ -289,11 +347,9 @@
 						{getPhaseLabel(stage)}...
 					</span>
 					<div class="flex items-center gap-3">
-						{#if timing?.phase_elapsed}
-							<span class="text-blue-400 text-sm font-mono">
-								{formatTime(timing.phase_elapsed)}
-							</span>
-						{/if}
+						<span class="text-blue-400 text-sm font-mono tabular-nums">
+							{formatTime(localPhaseElapsed)}
+						</span>
 						<span class="text-white/60 text-sm">
 							{progress.current} / {progress.total}
 						</span>
@@ -306,16 +362,19 @@
 					></div>
 				</div>
 
-				<!-- Completed phases timing -->
-				{#if timing?.phase_times && Object.keys(timing.phase_times).length > 0}
-					<div class="flex flex-wrap gap-x-4 gap-y-1 mt-3 text-xs">
+				<!-- Completed phases timing + total elapsed -->
+				<div class="flex flex-wrap items-center gap-x-4 gap-y-1 mt-3 text-xs">
+					{#if timing?.phase_times && Object.keys(timing.phase_times).length > 0}
 						{#each Object.entries(timing.phase_times) as [phase, duration]}
 							<span class="text-white/40">
 								{getPhaseLabel(phase)}: <span class="text-green-400 font-mono">{formatTime(duration)}</span>
 							</span>
 						{/each}
-					</div>
-				{/if}
+					{/if}
+					<span class="text-white/30 ml-auto">
+						total: <span class="text-blue-400/70 font-mono tabular-nums">{formatTime(localPipelineElapsed)}</span>
+					</span>
+				</div>
 
 				<p class="text-white/40 text-sm mt-2">
 					{#if stage === 'summarizing'}
@@ -436,33 +495,44 @@
 
 		<!-- Stats Panel (show when ready) -->
 		{#if stats && (stage === 'ready' || isProcessing)}
-			<div class="w-full flex items-center justify-center gap-6 text-white/40 text-xs mt-4">
-				<div class="flex items-center gap-1.5">
-					<svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-					</svg>
-					<span>{stats.total_files} files</span>
-				</div>
-				<div class="flex items-center gap-1.5">
-					<svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7" />
-					</svg>
-					<span>{stats.total_chunks} chunks</span>
-				</div>
-				{#if stats.total_size_bytes > 0}
+			<div class="w-full flex flex-col items-center gap-2 mt-4">
+				<div class="flex items-center justify-center gap-6 text-white/40 text-xs">
 					<div class="flex items-center gap-1.5">
 						<svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
 						</svg>
-						<span>{formatSize(stats.total_size_bytes)}</span>
+						<span>{stats.total_files} files</span>
 					</div>
-				{/if}
-				{#if finalPipelineTime && stage === 'ready'}
 					<div class="flex items-center gap-1.5">
+						<svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7" />
+						</svg>
+						<span>{stats.total_chunks} chunks</span>
+					</div>
+					{#if stats.total_size_bytes > 0}
+						<div class="flex items-center gap-1.5">
+							<svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+							</svg>
+							<span>{formatSize(stats.total_size_bytes)}</span>
+						</div>
+					{/if}
+				</div>
+				<!-- Pipeline timing summary (show when ready) -->
+				{#if stage === 'ready' && timing?.phase_times && Object.keys(timing.phase_times).length > 0}
+					<div class="flex items-center justify-center gap-1 text-white/30 text-xs">
 						<svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
 						</svg>
-						<span>processed in <span class="text-blue-400 font-mono">{formatTime(finalPipelineTime)}</span></span>
+						{#each Object.entries(timing.phase_times) as [phase, duration], i}
+							{#if i > 0}<span class="text-white/20">+</span>{/if}
+							<span class="text-white/40">{getPhaseLabel(phase).toLowerCase()}</span>
+							<span class="text-green-400/70 font-mono">{formatTime(duration)}</span>
+						{/each}
+						{#if finalPipelineTime}
+							<span class="text-white/20">=</span>
+							<span class="text-blue-400 font-mono">{formatTime(finalPipelineTime)}</span>
+						{/if}
 					</div>
 				{/if}
 			</div>

@@ -359,6 +359,17 @@ async def run_pipeline(target_path: str):
             _run_pipeline_sync, target_path, output_path, progress_update_fn
         )
 
+        # Save timing data to database
+        if state.phase_times:
+            import json
+            conn = state.get_connection()
+            if conn:
+                from docpack.storage import set_metadata
+                set_metadata(conn, "phase_times", json.dumps(state.phase_times))
+                total_time = sum(state.phase_times.values())
+                set_metadata(conn, "total_pipeline_time", str(total_time))
+                conn.close()
+
         # Done!
         state.stage = "ready"
         state.stats = final_stats
@@ -434,6 +445,21 @@ async def sse_events():
             if state.pipeline_start_time is not None:
                 pipeline_elapsed = time.time() - state.pipeline_start_time
 
+            # Try to load timing from database if not in memory but we have a docpack
+            phase_times = state.phase_times
+            if not phase_times and state.stage == "ready" and state.docpack_path:
+                try:
+                    conn = state.get_connection()
+                    if conn:
+                        from docpack.storage import get_metadata
+                        phase_times_json = get_metadata(conn, "phase_times")
+                        if phase_times_json:
+                            phase_times = json.loads(phase_times_json)
+                            state.phase_times = phase_times  # Cache it
+                        conn.close()
+                except Exception:
+                    pass  # Ignore errors loading timing
+
             initial = {
                 "stage": state.stage,
                 "progress": {
@@ -446,7 +472,7 @@ async def sse_events():
                 "timing": {
                     "phase_elapsed": phase_elapsed,
                     "pipeline_elapsed": pipeline_elapsed,
-                    "phase_times": state.phase_times,
+                    "phase_times": phase_times,
                 },
             }
             yield f"data: {json.dumps(initial)}\n\n"
