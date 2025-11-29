@@ -16,9 +16,11 @@ from typing import TYPE_CHECKING
 from docpack import FORMAT_VERSION, __version__
 from docpack.chunk import chunk_all
 from docpack.embed import embed_all
+from docpack.extract import EXTRACTABLE_EXTENSIONS, can_extract, extract_document
 from docpack.summarize import summarize_all
-from docpack.storage import init_db, insert_file, set_metadata
+from docpack.storage import init_db, insert_file, insert_image, set_metadata
 from docpack.runtime import RuntimeConfig, get_global_config
+from docpack.vision import vision_all, DEFAULT_VISION_MODEL
 
 from .sources import DirectorySource, URLSource, ZipSource
 from .vfs import VirtualFS
@@ -96,8 +98,10 @@ def freeze(
     skip_chunking: bool = False,
     skip_embedding: bool = False,
     skip_summarize: bool = False,
+    skip_vision: bool = False,
     embedding_model: str | None = None,
     summarize_model: str | None = None,
+    vision_model: str | None = None,
     config: RuntimeConfig | None = None,
 ) -> Path:
     """
@@ -107,6 +111,9 @@ def freeze(
     and stores them in a SQLite database. By default, text files are
     also chunked, embedded, and summarized for semantic search.
 
+    PDF, DOCX, and PPTX files are automatically extracted, with text
+    becoming searchable and images analyzed by a vision model.
+
     Args:
         target: Path or URL to ingest
         output: Output .docpack path (default: derived from target)
@@ -115,8 +122,10 @@ def freeze(
         skip_chunking: If True, skip the chunking step (raw ingestion only)
         skip_embedding: If True, skip the embedding step
         skip_summarize: If True, skip LLM summarization (requires Ollama)
+        skip_vision: If True, skip vision model analysis of images
         embedding_model: HuggingFace model to use for embeddings
         summarize_model: LLM model for summarization (default: qwen3:4b)
+        vision_model: Vision model for image analysis (default: qwen3-vl:2b)
 
     Returns:
         Path to created .docpack file
@@ -167,34 +176,91 @@ def freeze(
         with source:
             file_count = 0
             total_bytes = 0
+            image_count = 0
 
             for vfile in source.walk():
                 # Read content
                 content_bytes = vfile.read_bytes()
                 is_binary = vfile.is_binary()
 
-                # Decode text content
-                text_content: str | None = None
-                if not is_binary:
-                    text_content = content_bytes.decode("utf-8", errors="replace")
+                # Check if this is an extractable document (PDF, DOCX, PPTX)
+                if can_extract(vfile.extension or ""):
+                    try:
+                        extracted = extract_document(content_bytes, vfile.extension or "")
 
-                # Insert into database
-                insert_file(
-                    conn,
-                    path=vfile.path,
-                    size_bytes=vfile.size,
-                    sha256_hash=vfile.sha256(),
-                    content=text_content,
-                    is_binary=is_binary,
-                    extension=vfile.extension,
-                )
+                        # Insert file with extracted text
+                        file_id = insert_file(
+                            conn,
+                            path=vfile.path,
+                            size_bytes=vfile.size,
+                            sha256_hash=vfile.sha256(),
+                            content=extracted.text,
+                            is_binary=False,  # Text was extracted
+                            extension=vfile.extension,
+                        )
 
-                file_count += 1
-                total_bytes += vfile.size
+                        # Store extracted images
+                        for img in extracted.images:
+                            insert_image(
+                                conn,
+                                file_id=file_id,
+                                image_index=img.image_index,
+                                format=img.format,
+                                width=img.width,
+                                height=img.height,
+                                image_data=img.data,
+                                page_number=img.page_number,
+                                context=img.context,
+                            )
+                            image_count += 1
 
-                if verbose:
-                    status = "binary" if is_binary else "text"
-                    print(f"  [{status}] {vfile.path} ({vfile.size} bytes)")
+                        file_count += 1
+                        total_bytes += vfile.size
+
+                        if verbose:
+                            img_info = f", {len(extracted.images)} images" if extracted.images else ""
+                            page_info = f", {extracted.page_count} pages" if extracted.page_count else ""
+                            print(f"  [extracted] {vfile.path} ({vfile.size} bytes{page_info}{img_info})")
+
+                    except Exception as e:
+                        # Fall back to binary storage if extraction fails
+                        if verbose:
+                            print(f"  [warn] Failed to extract {vfile.path}: {e}")
+
+                        insert_file(
+                            conn,
+                            path=vfile.path,
+                            size_bytes=vfile.size,
+                            sha256_hash=vfile.sha256(),
+                            content=None,
+                            is_binary=True,
+                            extension=vfile.extension,
+                        )
+                        file_count += 1
+                        total_bytes += vfile.size
+
+                else:
+                    # Regular file handling
+                    text_content: str | None = None
+                    if not is_binary:
+                        text_content = content_bytes.decode("utf-8", errors="replace")
+
+                    insert_file(
+                        conn,
+                        path=vfile.path,
+                        size_bytes=vfile.size,
+                        sha256_hash=vfile.sha256(),
+                        content=text_content,
+                        is_binary=is_binary,
+                        extension=vfile.extension,
+                    )
+
+                    file_count += 1
+                    total_bytes += vfile.size
+
+                    if verbose:
+                        status = "binary" if is_binary else "text"
+                        print(f"  [{status}] {vfile.path} ({vfile.size} bytes)")
 
             # Store metadata
             set_metadata(conn, "format_version", FORMAT_VERSION)
@@ -203,6 +269,8 @@ def freeze(
             set_metadata(conn, "source", target)
             set_metadata(conn, "file_count", str(file_count))
             set_metadata(conn, "total_bytes", str(total_bytes))
+            if image_count > 0:
+                set_metadata(conn, "image_count", str(image_count))
 
             # Store config flags
             if skip_chunking:
@@ -211,13 +279,18 @@ def freeze(
                 set_metadata(conn, "config.skip_embedding", "true")
             if skip_summarize:
                 set_metadata(conn, "config.skip_summarize", "true")
+            if skip_vision:
+                set_metadata(conn, "config.skip_vision", "true")
             if embedding_model:
                 set_metadata(conn, "config.embedding_model", embedding_model)
             if summarize_model:
                 set_metadata(conn, "config.summarize_model", summarize_model)
+            if vision_model:
+                set_metadata(conn, "config.vision_model", vision_model)
 
             if verbose:
-                print(f"\nFroze {file_count} files ({total_bytes:,} bytes)")
+                img_info = f", {image_count} images extracted" if image_count > 0 else ""
+                print(f"\nFroze {file_count} files ({total_bytes:,} bytes{img_info})")
 
             # Chunk text files
             if not skip_chunking:
@@ -250,6 +323,29 @@ def freeze(
                             if verbose:
                                 print(f"Warning: Summarization failed: {e}")
                                 print("Continuing without summaries (Ollama may not be running)")
+
+                    # Vision analysis of images
+                    if not skip_vision and image_count > 0:
+                        if verbose:
+                            print("\nAnalyzing images with vision model...")
+                        cfg = config or get_global_config()
+                        vision_kwargs: dict = {"verbose": verbose, "config": cfg}
+                        if vision_model:
+                            vision_kwargs["model"] = vision_model
+                        try:
+                            analyzed = vision_all(conn, **vision_kwargs)
+                            # Re-embed the new image description chunks
+                            if analyzed > 0 and not skip_embedding:
+                                if verbose:
+                                    print("\nEmbedding image descriptions...")
+                                embed_kwargs_vision: dict = {"verbose": verbose, "config": cfg}
+                                if embedding_model:
+                                    embed_kwargs_vision["model"] = embedding_model
+                                embed_all(conn, **embed_kwargs_vision)
+                        except Exception as e:
+                            if verbose:
+                                print(f"Warning: Vision analysis failed: {e}")
+                                print("Continuing without image descriptions (Ollama may not be running)")
             else:
                 set_metadata(conn, "stage", "frozen")  # No chunks yet
 

@@ -37,6 +37,7 @@ def cmd_freeze(args: argparse.Namespace) -> int:
         force_cpu=args.cpu,
         embedding_model=args.model,
         summarize_model=args.summarize_model,
+        vision_model=args.vision_model,
         verbose=args.verbose,
     )
     set_global_config(config)
@@ -65,8 +66,10 @@ def cmd_freeze(args: argparse.Namespace) -> int:
             skip_chunking=args.no_chunk,
             skip_embedding=args.no_embed,
             skip_summarize=args.no_summarize,
+            skip_vision=args.no_vision,
             embedding_model=args.model,
             summarize_model=args.summarize_model,
+            vision_model=args.vision_model,
             config=config,
         )
         if not args.verbose:
@@ -124,6 +127,8 @@ def cmd_info(args: argparse.Namespace) -> int:
         print(f"  Files: {stats.get('total_files', 0)}")
         print(f"  Chunks: {stats.get('total_chunks', 0)}")
         print(f"  Vectors: {stats.get('total_vectors', 0)}")
+        if "image_count" in metadata:
+            print(f"  Images: {metadata['image_count']}")
         print(f"  Content size: {stats.get('total_size_bytes', 0):,} bytes")
 
         # Embedding info
@@ -139,6 +144,13 @@ def cmd_info(args: argparse.Namespace) -> int:
             print("Summaries:")
             print(f"  Model: {metadata.get('summary_model', 'N/A')}")
             print(f"  Count: {metadata.get('summary_count', 'N/A')}")
+
+        # Vision info
+        if "vision_model" in metadata:
+            print()
+            print("Vision:")
+            print(f"  Model: {metadata.get('vision_model', 'N/A')}")
+            print(f"  Analyzed: {metadata.get('vision_count', 'N/A')}")
 
         # Config flags
         config_keys = [k for k in metadata if k.startswith("config.")]
@@ -459,6 +471,11 @@ def main() -> int:
         help="Skip LLM summarization (requires Ollama with qwen3:4b)",
     )
     freeze_parser.add_argument(
+        "--no-vision",
+        action="store_true",
+        help="Skip vision model analysis of images in PDFs/DOCX/PPTX",
+    )
+    freeze_parser.add_argument(
         "-m",
         "--model",
         default=None,
@@ -468,6 +485,11 @@ def main() -> int:
         "--summarize-model",
         default=None,
         help="LLM model for summaries (default: qwen3:4b via Ollama)",
+    )
+    freeze_parser.add_argument(
+        "--vision-model",
+        default=None,
+        help="Vision model for image analysis (default: qwen3-vl:2b via Ollama)",
     )
     freeze_parser.add_argument(
         "-y",

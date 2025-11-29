@@ -24,6 +24,14 @@ Usage:
 from .chunks import get_chunks, insert_chunk
 from .connection import init_db
 from .files import get_all_files, get_file, get_file_by_path, insert_file
+from .images import (
+    count_images,
+    get_image_data,
+    get_images,
+    get_unanalyzed_images,
+    insert_image,
+    mark_image_analyzed,
+)
 from .marginalia import (
     Artifact,
     Note,
@@ -61,6 +69,13 @@ __all__ = [
     # Vectors (frozen realm)
     "insert_vector",
     "get_vectors",
+    # Images (frozen realm)
+    "insert_image",
+    "get_images",
+    "get_image_data",
+    "get_unanalyzed_images",
+    "mark_image_analyzed",
+    "count_images",
     # Metadata (frozen realm)
     "set_metadata",
     "get_metadata",

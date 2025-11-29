@@ -23,6 +23,7 @@ class RuntimeConfig:
         embedding_batch_size: Batch size for embedding operations
         llm_model: Ollama model for answer generation
         summarize_model: Ollama model for summarization
+        vision_model: Ollama vision model for image analysis
         parallel_workers: Number of parallel workers for CPU mode
         verbose: Print debug information
     """
@@ -37,6 +38,9 @@ class RuntimeConfig:
     llm_model: str = "qwen3:8b"
     summarize_model: str = "qwen3:1.7b"
     summarize_batch_size: int = 8
+
+    # Vision settings
+    vision_model: str = "qwen3-vl:2b"
 
     # Parallelism
     parallel_workers: int = 4
@@ -78,6 +82,7 @@ def get_runtime_config(
     embedding_model: str | None = None,
     llm_model: str | None = None,
     summarize_model: str | None = None,
+    vision_model: str | None = None,
     verbose: bool = False,
 ) -> RuntimeConfig:
     """
@@ -88,6 +93,7 @@ def get_runtime_config(
         embedding_model: Override embedding model
         llm_model: Override LLM model for answers
         summarize_model: Override model for summarization
+        vision_model: Override vision model for image analysis
         verbose: Enable verbose output
 
     Returns:
@@ -104,6 +110,8 @@ def get_runtime_config(
         config.llm_model = llm_model
     if summarize_model:
         config.summarize_model = summarize_model
+    if vision_model:
+        config.vision_model = vision_model
 
     # Auto-detect and warn
     if verbose and not force_cpu:

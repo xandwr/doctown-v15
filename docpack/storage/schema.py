@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     start_char INTEGER,
     end_char INTEGER,
     summary TEXT,
+    media_type TEXT,
     FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
     UNIQUE(file_id, chunk_index)
 );
@@ -109,4 +110,28 @@ CREATE TABLE IF NOT EXISTS artifacts (
 CREATE INDEX IF NOT EXISTS idx_notes_key ON notes(key);
 CREATE INDEX IF NOT EXISTS idx_artifacts_session ON artifacts(session_id);
 CREATE INDEX IF NOT EXISTS idx_artifacts_name ON artifacts(name);
+
+-- =============================================================================
+-- IMAGES: Visual content extracted from documents (PDFs, DOCX, PPTX)
+-- Raw image data preserved for re-analysis with future models
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS images (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id INTEGER NOT NULL,
+    page_number INTEGER,
+    image_index INTEGER NOT NULL,
+    format TEXT NOT NULL,
+    width INTEGER NOT NULL,
+    height INTEGER NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    image_data BLOB NOT NULL,
+    context TEXT,
+    analyzed_at TEXT,
+    FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
+    UNIQUE(file_id, page_number, image_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_images_file_id ON images(file_id);
+CREATE INDEX IF NOT EXISTS idx_images_unanalyzed ON images(analyzed_at) WHERE analyzed_at IS NULL;
 """
