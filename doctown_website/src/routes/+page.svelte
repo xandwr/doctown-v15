@@ -32,11 +32,18 @@
 		total_size_bytes: number;
 	}
 
+	interface Timing {
+		phase_elapsed: number | null;
+		pipeline_elapsed: number | null;
+		phase_times: Record<string, number>;
+	}
+
 	interface ServerState {
 		stage: string;
 		progress: Progress;
 		stats: Stats | null;
 		error: string | null;
+		timing: Timing | null;
 	}
 
 	// State
@@ -48,6 +55,13 @@
 	let stats = $state<Stats | null>(null);
 	let error = $state<string | null>(null);
 	let isAsking = $state(false);
+	let timing = $state<Timing | null>(null);
+	let finalPipelineTime = $state<number | null>(null);
+
+	// Query timing
+	let queryStartTime = $state<number | null>(null);
+	let queryElapsed = $state<number | null>(null);
+	let queryTimerInterval = $state<ReturnType<typeof setInterval> | null>(null);
 
 	// Derived
 	let progressPercent = $derived(
@@ -66,12 +80,20 @@
 
 		eventSource.onmessage = (event) => {
 			const data: ServerState = JSON.parse(event.data);
+			const prevStage = stage;
 			stage = data.stage;
 			progress = data.progress;
 			if (data.stats) {
 				stats = data.stats;
 			}
 			error = data.error;
+			if (data.timing) {
+				timing = data.timing;
+				// Capture final pipeline time when transitioning to ready
+				if (prevStage !== 'ready' && data.stage === 'ready' && data.timing.pipeline_elapsed) {
+					finalPipelineTime = data.timing.pipeline_elapsed;
+				}
+			}
 		};
 
 		eventSource.onerror = () => {
@@ -80,6 +102,10 @@
 
 		return () => {
 			eventSource.close();
+			// Clean up query timer
+			if (queryTimerInterval) {
+				clearInterval(queryTimerInterval);
+			}
 		};
 	});
 
@@ -89,6 +115,8 @@
 
 		error = null;
 		answerResponse = null;
+		finalPipelineTime = null;
+		timing = null;
 
 		try {
 			const response = await fetch('/api/process', {
@@ -113,6 +141,18 @@
 		isAsking = true;
 		error = null;
 
+		// Start query timer
+		queryStartTime = performance.now();
+		queryElapsed = 0;
+		if (queryTimerInterval) {
+			clearInterval(queryTimerInterval);
+		}
+		queryTimerInterval = setInterval(() => {
+			if (queryStartTime !== null) {
+				queryElapsed = (performance.now() - queryStartTime) / 1000;
+			}
+		}, 50); // Update every 50ms for smooth display
+
 		try {
 			const response = await fetch('/api/ask', {
 				method: 'POST',
@@ -131,6 +171,14 @@
 			error = e instanceof Error ? e.message : 'Network error';
 		} finally {
 			isAsking = false;
+			// Stop timer and freeze at final value
+			if (queryTimerInterval) {
+				clearInterval(queryTimerInterval);
+				queryTimerInterval = null;
+			}
+			if (queryStartTime !== null) {
+				queryElapsed = (performance.now() - queryStartTime) / 1000;
+			}
 		}
 	}
 
@@ -152,6 +200,15 @@
 		if (bytes < 1024) return `${bytes} B`;
 		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
 		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+	}
+
+	function formatTime(seconds: number): string {
+		if (seconds < 60) {
+			return `${seconds.toFixed(1)}s`;
+		}
+		const mins = Math.floor(seconds / 60);
+		const secs = seconds % 60;
+		return `${mins}m ${secs.toFixed(0)}s`;
 	}
 
 	function getPhaseLabel(phase: string): string {
@@ -231,9 +288,16 @@
 					<span class="text-white/80 font-medium">
 						{getPhaseLabel(stage)}...
 					</span>
-					<span class="text-white/60 text-sm">
-						{progress.current} / {progress.total}
-					</span>
+					<div class="flex items-center gap-3">
+						{#if timing?.phase_elapsed}
+							<span class="text-blue-400 text-sm font-mono">
+								{formatTime(timing.phase_elapsed)}
+							</span>
+						{/if}
+						<span class="text-white/60 text-sm">
+							{progress.current} / {progress.total}
+						</span>
+					</div>
 				</div>
 				<div class="w-full bg-white/10 rounded-full h-2 overflow-hidden">
 					<div
@@ -241,7 +305,19 @@
 						style="width: {progressPercent}%"
 					></div>
 				</div>
-				<p class="text-white/40 text-sm mt-3">
+
+				<!-- Completed phases timing -->
+				{#if timing?.phase_times && Object.keys(timing.phase_times).length > 0}
+					<div class="flex flex-wrap gap-x-4 gap-y-1 mt-3 text-xs">
+						{#each Object.entries(timing.phase_times) as [phase, duration]}
+							<span class="text-white/40">
+								{getPhaseLabel(phase)}: <span class="text-green-400 font-mono">{formatTime(duration)}</span>
+							</span>
+						{/each}
+					</div>
+				{/if}
+
+				<p class="text-white/40 text-sm mt-2">
 					{#if stage === 'summarizing'}
 						Generating AI summaries for better answers...
 					{:else if stage === 'embedding'}
@@ -272,7 +348,10 @@
 						class="w-full pl-14 pr-6 py-5 text-lg bg-white/10 backdrop-blur-sm border border-white/20 rounded-2xl text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
 					/>
 					{#if isAsking}
-						<div class="absolute right-5 top-1/2 -translate-y-1/2">
+						<div class="absolute right-5 top-1/2 -translate-y-1/2 flex items-center gap-2">
+							<span class="text-blue-400 text-sm font-mono tabular-nums">
+								{queryElapsed !== null ? formatTime(queryElapsed) : ''}
+							</span>
 							<svg class="h-5 w-5 animate-spin text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
 								<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
 								<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
@@ -306,6 +385,12 @@
 						<span class="text-white/40">
 							{answerResponse.sources_used} of {answerResponse.sources_retrieved} sources used
 						</span>
+						{#if queryElapsed !== null}
+							<span class="text-white/30">|</span>
+							<span class="text-white/40">
+								<span class="text-blue-400 font-mono">{formatTime(queryElapsed)}</span>
+							</span>
+						{/if}
 					</div>
 				</div>
 
@@ -370,6 +455,14 @@
 							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
 						</svg>
 						<span>{formatSize(stats.total_size_bytes)}</span>
+					</div>
+				{/if}
+				{#if finalPipelineTime && stage === 'ready'}
+					<div class="flex items-center gap-1.5">
+						<svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+						</svg>
+						<span>processed in <span class="text-blue-400 font-mono">{formatTime(finalPipelineTime)}</span></span>
 					</div>
 				{/if}
 			</div>

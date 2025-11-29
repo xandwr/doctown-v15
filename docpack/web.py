@@ -53,6 +53,11 @@ class AppState:
     # SSE subscribers
     subscribers: list[asyncio.Queue] = field(default_factory=list)
 
+    # Timing tracking (timestamps in seconds since epoch)
+    pipeline_start_time: float | None = None
+    phase_start_time: float | None = None
+    phase_times: dict[str, float] = field(default_factory=dict)  # phase -> duration in seconds
+
     def get_connection(self) -> sqlite3.Connection | None:
         """Get a new database connection (thread-safe)."""
         if self.docpack_path is None:
@@ -68,6 +73,18 @@ state = AppState()
 
 async def broadcast_state():
     """Send current state to all SSE subscribers."""
+    import time
+
+    # Calculate current phase elapsed time
+    phase_elapsed = None
+    if state.phase_start_time is not None:
+        phase_elapsed = time.time() - state.phase_start_time
+
+    # Calculate total pipeline elapsed time
+    pipeline_elapsed = None
+    if state.pipeline_start_time is not None:
+        pipeline_elapsed = time.time() - state.pipeline_start_time
+
     data = {
         "stage": state.stage,
         "progress": {
@@ -77,6 +94,11 @@ async def broadcast_state():
         },
         "stats": state.stats,
         "error": state.error,
+        "timing": {
+            "phase_elapsed": phase_elapsed,
+            "pipeline_elapsed": pipeline_elapsed,
+            "phase_times": state.phase_times,
+        },
     }
     for queue in state.subscribers:
         await queue.put(data)
@@ -279,8 +301,14 @@ async def run_pipeline(target_path: str):
     This wraps the existing docpack functions and broadcasts progress via SSE.
     """
     import os
+    import time
 
     try:
+        # Initialize timing
+        state.pipeline_start_time = time.time()
+        state.phase_start_time = time.time()
+        state.phase_times = {}
+
         state.stage = "freezing"
         state.error = None
         await broadcast_state()
@@ -297,14 +325,23 @@ async def run_pipeline(target_path: str):
         def progress_update_fn(phase: str, current: int, total: int, stats: dict | None = None):
             if phase.endswith("_done"):
                 base_phase = phase.replace("_done", "")
+                # Record the completed phase's duration
+                if state.phase_start_time is not None:
+                    state.phase_times[base_phase] = time.time() - state.phase_start_time
+
+                # Transition to next phase and reset phase timer
                 if base_phase == "freezing":
                     state.stage = "chunking"
+                    state.phase_start_time = time.time()
                 elif base_phase == "chunking":
                     state.stage = "embedding"
+                    state.phase_start_time = time.time()
                 elif base_phase == "embedding":
                     state.stage = "summarizing"
+                    state.phase_start_time = time.time()
                 elif base_phase == "summarizing":
                     state.stage = "ready"
+                    state.phase_start_time = None  # Pipeline complete
             else:
                 state.stage = phase
                 state.progress_phase = phase
@@ -387,6 +424,15 @@ async def sse_events():
         try:
             # Send initial state
             import json
+            import time
+
+            # Calculate timing for initial state
+            phase_elapsed = None
+            if state.phase_start_time is not None:
+                phase_elapsed = time.time() - state.phase_start_time
+            pipeline_elapsed = None
+            if state.pipeline_start_time is not None:
+                pipeline_elapsed = time.time() - state.pipeline_start_time
 
             initial = {
                 "stage": state.stage,
@@ -397,6 +443,11 @@ async def sse_events():
                 },
                 "stats": state.stats,
                 "error": state.error,
+                "timing": {
+                    "phase_elapsed": phase_elapsed,
+                    "pipeline_elapsed": pipeline_elapsed,
+                    "phase_times": state.phase_times,
+                },
             }
             yield f"data: {json.dumps(initial)}\n\n"
 
