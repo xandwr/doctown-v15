@@ -6,6 +6,7 @@ Extracts rich musical features including:
 - Spectral shape descriptors (brightness, warmth, texture)
 - Emotion inference from feature combinations
 - Sub-genre detection
+- Speech transcription via Distil-Whisper
 
 Converts all features to natural language for semantic search.
 """
@@ -17,6 +18,7 @@ import tempfile
 from dataclasses import dataclass, field
 
 from .base import ExtractedDocument
+from .speech import SpeechFeatures, transcribe_audio, is_speech_content
 
 AUDIO_EXTENSIONS: frozenset[str] = frozenset({
     ".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma"
@@ -129,36 +131,64 @@ class MusicFeatures:
     texture_description: str  # "smooth, low-transient, reverb-rich"
     timbre_description: str  # "warm, wide, atmospheric"
 
+    # Speech transcription (from Distil-Whisper)
+    speech: SpeechFeatures | None = None
 
-def extract_audio(data: bytes, filename: str = "audio") -> ExtractedDocument:
-    """Extract searchable text from audio file."""
+
+def extract_audio(
+    data: bytes,
+    filename: str = "audio",
+    *,
+    skip_speech: bool = False,
+) -> ExtractedDocument:
+    """Extract searchable text from audio file.
+
+    Args:
+        data: Audio file bytes
+        filename: Original filename for display
+        skip_speech: If True, skip speech transcription (faster for music-only files)
+
+    Returns:
+        ExtractedDocument with text description and metadata
+    """
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
         f.write(data)
         temp_path = f.name
 
     try:
-        features = _analyze_audio(temp_path)
+        features = _analyze_audio(temp_path, skip_speech=skip_speech)
         text = _build_description(filename, features)
+
+        metadata = {
+            "type": "audio",
+            "bpm": str(int(features.bpm)),
+            "key": f"{features.key} {features.scale}",
+            "duration": f"{int(features.duration_seconds)}s",
+            "emotions": ", ".join(features.emotions),
+            "subgenres": ", ".join(features.subgenres),
+        }
+
+        # Add speech metadata if transcription was performed
+        if features.speech and features.speech.has_speech:
+            metadata["has_speech"] = "true"
+            metadata["speech_language"] = features.speech.language
+            metadata["speech_ratio"] = f"{features.speech.speech_ratio:.2f}"
+            # Store word count for quick filtering
+            word_count = len(features.speech.full_text.split())
+            metadata["transcript_words"] = str(word_count)
 
         return ExtractedDocument(
             text=text,
             images=[],
             page_count=None,
-            metadata={
-                "type": "audio",
-                "bpm": str(int(features.bpm)),
-                "key": f"{features.key} {features.scale}",
-                "duration": f"{int(features.duration_seconds)}s",
-                "emotions": ", ".join(features.emotions),
-                "subgenres": ", ".join(features.subgenres),
-            },
+            metadata=metadata,
         )
     finally:
         os.unlink(temp_path)
 
 
-def _analyze_audio(path: str) -> MusicFeatures:
-    """Extract comprehensive features using librosa + CREPE + PANNs."""
+def _analyze_audio(path: str, *, skip_speech: bool = False) -> MusicFeatures:
+    """Extract comprehensive features using librosa + CREPE + PANNs + Whisper."""
     import librosa
     import numpy as np
 
@@ -195,6 +225,11 @@ def _analyze_audio(path: str) -> MusicFeatures:
     texture_desc = _describe_texture(spectral)
     timbre_desc = _describe_timbre(spectral)
 
+    # Speech transcription (Distil-Whisper)
+    speech = None
+    if not skip_speech:
+        speech = _extract_speech(path)
+
     return MusicFeatures(
         duration_seconds=duration,
         bpm=bpm,
@@ -209,6 +244,7 @@ def _analyze_audio(path: str) -> MusicFeatures:
         subgenres=subgenres,
         texture_description=texture_desc,
         timbre_description=timbre_desc,
+        speech=speech,
     )
 
 
@@ -767,6 +803,28 @@ def _describe_timbre(spectral: SpectralFeatures) -> str:
     return ", ".join(parts) if parts else "neutral timbre"
 
 
+def _extract_speech(path: str) -> SpeechFeatures | None:
+    """Extract speech transcription using Distil-Whisper."""
+    try:
+        # First do a quick check if there's likely speech content
+        # This avoids running full transcription on pure instrumental music
+        if not is_speech_content(path, threshold=0.1):
+            return SpeechFeatures(
+                full_text="",
+                segments=[],
+                language="none",
+                has_speech=False,
+                speech_ratio=0.0,
+            )
+
+        # Run full transcription
+        return transcribe_audio(path)
+
+    except Exception:
+        # Return None on any failure - speech is optional
+        return None
+
+
 def _build_description(filename: str, f: MusicFeatures) -> str:
     """Build rich natural language description for semantic search."""
     mins = int(f.duration_seconds // 60)
@@ -843,6 +901,31 @@ def _build_description(filename: str, f: MusicFeatures) -> str:
 
     lines.append(f"Genre/style: {', '.join(f.subgenres + f.genre_tags)}")
     lines.append(f"Searchable tags: {', '.join(unique_tags)}")
+
+    # Speech transcription section
+    if f.speech and f.speech.has_speech:
+        lines.append("")
+        lines.append("=" * 40)
+        lines.append("SPEECH TRANSCRIPTION")
+        lines.append("=" * 40)
+        lines.append("")
+
+        # Include speech metadata
+        lines.append(f"Language: {f.speech.language}")
+        lines.append(f"Speech coverage: {f.speech.speech_ratio:.0%} of audio")
+        lines.append("")
+
+        # Include full transcription for semantic search
+        lines.append("Transcript:")
+        lines.append(f.speech.full_text)
+
+        # Add timed segments if available
+        if f.speech.segments:
+            lines.append("")
+            lines.append("Timed segments:")
+            for seg in f.speech.segments:
+                timestamp = f"[{seg.start:.1f}s - {seg.end:.1f}s]"
+                lines.append(f"{timestamp} {seg.text}")
 
     return "\n".join(lines)
 

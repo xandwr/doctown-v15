@@ -1,10 +1,11 @@
-"""Document extraction module for PDF, DOCX, PPTX, and image files."""
+"""Document extraction module for PDF, DOCX, PPTX, image, and audio files."""
 
 from __future__ import annotations
 
 from .audio import AUDIO_EXTENSIONS, can_extract_audio, extract_audio
 from .base import ExtractedDocument, ExtractedImage
 from .image import IMAGE_EXTENSIONS, can_extract_image, extract_image
+from .speech import SpeechFeatures, TranscriptionSegment, transcribe_audio
 
 # Extensions that can be extracted (documents)
 DOCUMENT_EXTENSIONS: frozenset[str] = frozenset({".pdf", ".docx", ".pptx"})
@@ -58,6 +59,8 @@ def can_extract(extension: str) -> bool:
 __all__ = [
     "ExtractedDocument",
     "ExtractedImage",
+    "SpeechFeatures",
+    "TranscriptionSegment",
     "EXTRACTABLE_EXTENSIONS",
     "DOCUMENT_EXTENSIONS",
     "IMAGE_EXTENSIONS",
@@ -65,6 +68,7 @@ __all__ = [
     "extract_document",
     "extract_image",
     "extract_audio",
+    "transcribe_audio",
     "can_extract",
     "can_extract_image",
     "can_extract_audio",
