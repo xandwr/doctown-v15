@@ -393,11 +393,19 @@
 					handleProcess();
 				}
 			} else if (stage === 'ready') {
-				if (searchQuery.trim() && canSearch) {
+				// Shift+Enter adds newline, Enter alone submits
+				if (!e.shiftKey && searchQuery.trim() && canSearch) {
+					e.preventDefault();
 					handleAsk();
 				}
 			}
 		}
+	}
+
+	function autoResizeTextarea(e: Event) {
+		const textarea = e.target as HTMLTextAreaElement;
+		textarea.style.height = 'auto';
+		textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
 	}
 
 	function getFileIcon(fileName: string): string {
@@ -458,29 +466,29 @@
 	}
 </script>
 
-<main class="min-h-screen bg-gradient-to-b from-slate-900 to-slate-800 flex flex-col items-center px-4 py-12">
-	<div class="w-full max-w-3xl flex flex-col items-center gap-6">
+<main class="min-h-screen bg-gradient-to-b from-slate-900 to-slate-800 flex flex-col items-center px-3 py-6 sm:px-4 sm:py-12">
+	<div class="w-full max-w-3xl flex flex-col items-center gap-4 sm:gap-6">
 		<!-- Logo/Title -->
-		<h1 class="text-4xl font-bold text-white tracking-tight">
+		<h1 class="text-3xl sm:text-4xl font-bold text-white tracking-tight">
 			Doctown
 		</h1>
-		<p class="text-white/60 text-base -mt-3">
+		<p class="text-white/60 text-sm sm:text-base -mt-2 sm:-mt-3">
 			Instant answers from your documents
 		</p>
 
 		<!-- Error Display -->
 		{#if error}
-			<div class="w-full bg-red-500/20 border border-red-500/50 rounded-xl p-4 text-red-200 text-sm">
+			<div class="w-full bg-red-500/20 border border-red-500/50 rounded-xl p-3 sm:p-4 text-red-200 text-xs sm:text-sm">
 				{error}
 			</div>
 		{/if}
 
 		<!-- File Upload UI (show when idle) -->
 		{#if stage === 'idle' || stage === 'error'}
-			<div class="w-full mt-4 space-y-4">
+			<div class="w-full mt-2 sm:mt-4 space-y-3 sm:space-y-4">
 				<!-- Drop zone -->
 				<div
-					class="relative border-2 border-dashed rounded-2xl p-8 text-center transition-all cursor-pointer
+					class="relative border-2 border-dashed rounded-xl sm:rounded-2xl p-6 sm:p-8 text-center transition-all cursor-pointer
 						{isDragOver ? 'border-blue-400 bg-blue-500/10' : 'border-white/20 hover:border-white/40 hover:bg-white/5'}"
 					ondrop={handleDrop}
 					ondragover={handleDragOver}
@@ -499,13 +507,13 @@
 							<span class="text-white/60">Uploading files...</span>
 						</div>
 					{:else}
-						<div class="flex flex-col items-center gap-3">
-							<svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 text-white/40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<div class="flex flex-col items-center gap-2 sm:gap-3">
+							<svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 sm:h-10 sm:w-10 text-white/40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
 							</svg>
 							<div>
-								<p class="text-white/70 text-lg">Drop files here or tap to browse</p>
-								<p class="text-white/40 text-sm mt-1">Upload documents, code, or any text files</p>
+								<p class="text-white/70 text-base sm:text-lg">Drop files here or tap to browse</p>
+								<p class="text-white/40 text-xs sm:text-sm mt-1">Upload documents, code, or any text files</p>
 							</div>
 						</div>
 					{/if}
@@ -536,9 +544,9 @@
 
 				<!-- Staged files list -->
 				{#if stagedFiles.length > 0}
-					<div class="bg-white/5 rounded-xl p-4 space-y-2">
-						<div class="flex items-center justify-between mb-3">
-							<span class="text-white/60 text-sm">
+					<div class="bg-white/5 rounded-xl p-3 sm:p-4 space-y-2">
+						<div class="flex items-center justify-between mb-2 sm:mb-3">
+							<span class="text-white/60 text-xs sm:text-sm">
 								{stagedFiles.length} file{stagedFiles.length !== 1 ? 's' : ''} staged ({formatSize(stagedTotalSize)})
 							</span>
 							<button
@@ -549,11 +557,11 @@
 							</button>
 						</div>
 
-						<div class="max-h-48 overflow-y-auto space-y-1">
+						<div class="max-h-40 sm:max-h-48 overflow-y-auto space-y-1">
 							{#each stagedFiles as file}
-								<div class="flex items-center gap-3 py-1.5 px-2 rounded-lg hover:bg-white/5 group">
+								<div class="flex items-center gap-2 sm:gap-3 py-1.5 px-2 rounded-lg hover:bg-white/5 group">
 									<!-- File icon -->
-									<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-white/40 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-white/40 shrink-0 hidden sm:block" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 										{#if getFileIcon(file.name) === 'code'}
 											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
 										{:else if getFileIcon(file.name) === 'doc'}
@@ -566,12 +574,12 @@
 									</svg>
 
 									<!-- File name -->
-									<span class="flex-1 text-white/70 text-sm truncate" title={file.name}>
+									<span class="flex-1 text-white/70 text-xs sm:text-sm truncate" title={file.name}>
 										{file.name}
 									</span>
 
 									<!-- File size -->
-									<span class="text-white/30 text-xs shrink-0">
+									<span class="text-white/30 text-xs shrink-0 hidden sm:inline">
 										{formatSize(file.size)}
 									</span>
 
@@ -593,7 +601,7 @@
 						<button
 							onclick={handleProcess}
 							disabled={isProcessing || isUploading}
-							class="w-full mt-3 px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 disabled:cursor-not-allowed text-white font-medium rounded-xl transition-colors"
+							class="w-full mt-2 sm:mt-3 px-4 sm:px-6 py-2.5 sm:py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 disabled:cursor-not-allowed text-white text-sm sm:text-base font-medium rounded-xl transition-colors"
 						>
 							Process {stagedFiles.length} file{stagedFiles.length !== 1 ? 's' : ''}
 						</button>
@@ -637,21 +645,21 @@
 
 		<!-- Progress Bar (show during processing) -->
 		{#if isProcessing}
-			<div class="w-full bg-white/5 rounded-xl p-6 mt-4">
-				<div class="flex items-center justify-between mb-3">
-					<span class="text-white/80 font-medium">
+			<div class="w-full bg-white/5 rounded-xl p-4 sm:p-6 mt-2 sm:mt-4">
+				<div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-0 mb-3">
+					<span class="text-white/80 font-medium text-sm sm:text-base">
 						{getPhaseLabel(stage)}...
 					</span>
-					<div class="flex items-center gap-3">
-						<span class="text-blue-400 text-sm font-mono tabular-nums">
+					<div class="flex items-center gap-2 sm:gap-3">
+						<span class="text-blue-400 text-xs sm:text-sm font-mono tabular-nums">
 							{formatTime(localPhaseElapsed)}
 						</span>
-						<span class="text-white/60 text-sm">
+						<span class="text-white/60 text-xs sm:text-sm">
 							{progress.current} / {progress.total}
 						</span>
 					</div>
 				</div>
-				<div class="w-full bg-white/10 rounded-full h-2 overflow-hidden">
+				<div class="w-full bg-white/10 rounded-full h-1.5 sm:h-2 overflow-hidden">
 					<div
 						class="h-full bg-blue-500 transition-all duration-300 ease-out"
 						style="width: {progressPercent}%"
@@ -659,7 +667,7 @@
 				</div>
 
 				<!-- Completed phases timing + total elapsed -->
-				<div class="flex flex-wrap items-center gap-x-4 gap-y-1 mt-3 text-xs">
+				<div class="flex flex-wrap items-center gap-x-3 sm:gap-x-4 gap-y-1 mt-2 sm:mt-3 text-xs">
 					{#if timing?.phase_times && Object.keys(timing.phase_times).length > 0}
 						{#each Object.entries(timing.phase_times) as [phase, duration]}
 							<span class="text-white/40">
@@ -672,7 +680,7 @@
 					</span>
 				</div>
 
-				<p class="text-white/40 text-sm mt-2">
+				<p class="text-white/40 text-xs sm:text-sm mt-2">
 					{#if stage === 'summarizing'}
 						Generating AI summaries for better answers...
 					{:else if stage === 'embedding'}
@@ -684,52 +692,65 @@
 			</div>
 		{/if}
 
-		<!-- Search Bar (show when ready) - Raycast-style -->
+		<!-- Search Bar (show when ready) - OpenAI-style auto-expanding -->
 		{#if stage === 'ready'}
-			<div class="w-full mt-4">
+			<div class="w-full mt-2 sm:mt-4">
 				<div class="relative">
-					<div class="absolute left-5 top-1/2 -translate-y-1/2 text-white/40">
+					<div class="absolute left-3 sm:left-5 top-4 sm:top-5 text-white/40">
 						<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
 						</svg>
 					</div>
-					<input
-						type="text"
+					<textarea
 						bind:value={searchQuery}
 						onkeydown={handleKeydown}
+						oninput={autoResizeTextarea}
 						placeholder="Ask anything about your documents..."
 						disabled={isAsking}
 						autofocus
-						class="w-full pl-14 pr-6 py-5 text-lg bg-white/10 backdrop-blur-sm border border-white/20 rounded-2xl text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-					/>
+						rows="1"
+						class="w-full pl-10 sm:pl-14 pr-12 sm:pr-16 py-3.5 sm:py-5 text-base sm:text-lg bg-white/10 backdrop-blur-sm border border-white/20 rounded-xl sm:rounded-2xl text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all resize-none overflow-hidden"
+						style="min-height: 52px; max-height: 200px;"
+					></textarea>
 					{#if isAsking}
-						<div class="absolute right-5 top-1/2 -translate-y-1/2 flex items-center gap-2">
-							<span class="text-blue-400 text-sm font-mono tabular-nums">
+						<div class="absolute right-3 sm:right-5 top-4 sm:top-5 flex items-center gap-2">
+							<span class="text-blue-400 text-xs sm:text-sm font-mono tabular-nums">
 								{queryElapsed !== null ? formatTime(queryElapsed) : ''}
 							</span>
-							<svg class="h-5 w-5 animate-spin text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+							<svg class="h-4 w-4 sm:h-5 sm:w-5 animate-spin text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
 								<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
 								<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
 							</svg>
 						</div>
+					{:else}
+						<button
+							onclick={handleAsk}
+							disabled={!searchQuery.trim() || !canSearch}
+							aria-label="Submit search"
+							class="absolute right-3 sm:right-5 top-3.5 sm:top-4 p-1.5 sm:p-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:bg-white/10 disabled:text-white/30 text-white transition-colors"
+						>
+							<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 sm:h-5 sm:w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3" />
+							</svg>
+						</button>
 					{/if}
 				</div>
-				<p class="text-white/30 text-xs mt-2 text-center">Press Enter to search</p>
+				<p class="text-white/30 text-xs mt-2 text-center">Press Enter to search, Shift+Enter for new line</p>
 			</div>
 		{/if}
 
 		<!-- Answer Display -->
 		{#if answerResponse}
-			<div class="w-full mt-2 space-y-4">
+			<div class="w-full mt-2 space-y-3 sm:space-y-4">
 				<!-- Main Answer Card -->
-				<div class="bg-white/[0.08] border border-white/10 rounded-2xl p-6">
+				<div class="bg-white/8 border border-white/10 rounded-xl sm:rounded-2xl p-4 sm:p-6">
 					<!-- Answer text -->
-					<p class="text-white text-lg leading-relaxed">
+					<p class="text-white text-base sm:text-lg leading-relaxed">
 						{answerResponse.answer}
 					</p>
 
 					<!-- Confidence indicator -->
-					<div class="mt-4 flex items-center gap-2 text-sm">
+					<div class="mt-3 sm:mt-4 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs sm:text-sm">
 						<span class="{getConfidenceColor(answerResponse.confidence)} font-mono">
 							{getConfidenceIcon(answerResponse.confidence)}
 						</span>
@@ -738,7 +759,7 @@
 						</span>
 						<span class="text-white/30">|</span>
 						<span class="text-white/40">
-							{answerResponse.sources_used} of {answerResponse.sources_retrieved} sources used
+							{answerResponse.sources_used}/{answerResponse.sources_retrieved} sources
 						</span>
 						{#if queryElapsed !== null}
 							<span class="text-white/30">|</span>
@@ -754,16 +775,16 @@
 					<div class="space-y-2">
 						<h3 class="text-white/50 text-xs font-medium uppercase tracking-wide px-1">Sources</h3>
 						{#each answerResponse.citations as citation}
-							<div class="bg-white/[0.04] border border-white/[0.08] rounded-xl p-4 hover:bg-white/[0.06] transition-colors group">
-								<div class="flex items-start gap-3">
+							<div class="bg-white/4 border border-white/8 rounded-lg sm:rounded-xl p-3 sm:p-4 hover:bg-white/6 transition-colors group">
+								<div class="flex items-start gap-2 sm:gap-3">
 									<!-- Citation number -->
-									<span class="text-blue-400 font-mono text-sm font-medium shrink-0">
+									<span class="text-blue-400 font-mono text-xs sm:text-sm font-medium shrink-0">
 										[{citation.id}]
 									</span>
 									<div class="flex-1 min-w-0">
 										<!-- File path -->
-										<div class="flex items-center gap-2 mb-2">
-											<span class="text-blue-300 text-sm font-medium truncate">
+										<div class="flex flex-col sm:flex-row sm:items-center gap-0.5 sm:gap-2 mb-1.5 sm:mb-2">
+											<span class="text-blue-300 text-xs sm:text-sm font-medium truncate">
 												{citation.file_path}
 											</span>
 											{#if citation.start_char !== null}
@@ -777,7 +798,7 @@
 											{/if}
 										</div>
 										<!-- Quote -->
-										<p class="text-white/60 text-sm leading-relaxed line-clamp-2">
+										<p class="text-white/60 text-xs sm:text-sm leading-relaxed line-clamp-2">
 											"{citation.quote}"
 										</p>
 									</div>
@@ -791,23 +812,23 @@
 
 		<!-- Stats Panel (show when ready) -->
 		{#if stats && (stage === 'ready' || isProcessing)}
-			<div class="w-full flex flex-col items-center gap-2 mt-4">
-				<div class="flex items-center justify-center gap-6 text-white/40 text-xs">
-					<div class="flex items-center gap-1.5">
-						<svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+			<div class="w-full flex flex-col items-center gap-1.5 sm:gap-2 mt-2 sm:mt-4">
+				<div class="flex items-center justify-center gap-3 sm:gap-6 text-white/40 text-xs">
+					<div class="flex items-center gap-1 sm:gap-1.5">
+						<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 sm:h-3.5 sm:w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
 						</svg>
 						<span>{stats.total_files} files</span>
 					</div>
-					<div class="flex items-center gap-1.5">
-						<svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<div class="flex items-center gap-1 sm:gap-1.5">
+						<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 sm:h-3.5 sm:w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7" />
 						</svg>
 						<span>{stats.total_chunks} chunks</span>
 					</div>
 					{#if stats.total_size_bytes > 0}
-						<div class="flex items-center gap-1.5">
-							<svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<div class="flex items-center gap-1 sm:gap-1.5">
+							<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 sm:h-3.5 sm:w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
 							</svg>
 							<span>{formatSize(stats.total_size_bytes)}</span>
@@ -816,13 +837,13 @@
 				</div>
 				<!-- Pipeline timing summary (show when ready) -->
 				{#if stage === 'ready' && timing?.phase_times && Object.keys(timing.phase_times).length > 0}
-					<div class="flex items-center justify-center gap-1 text-white/30 text-xs">
-						<svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+					<div class="flex flex-wrap items-center justify-center gap-1 text-white/30 text-xs px-2">
+						<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 sm:h-3.5 sm:w-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
 						</svg>
 						{#each Object.entries(timing.phase_times) as [phase, duration], i}
 							{#if i > 0}<span class="text-white/20">+</span>{/if}
-							<span class="text-white/40">{getPhaseLabel(phase).toLowerCase()}</span>
+							<span class="text-white/40 hidden sm:inline">{getPhaseLabel(phase).toLowerCase()}</span>
 							<span class="text-green-400/70 font-mono">{formatTime(duration)}</span>
 						{/each}
 						{#if finalPipelineTime}
