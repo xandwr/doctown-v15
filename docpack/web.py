@@ -213,8 +213,9 @@ def _run_pipeline_sync(target_path: str, output_path: Path, progress_update_fn):
     """
     from docpack.chunk import chunk_all
     from docpack.embed import embed_all
+    from docpack.extract import can_extract, extract_document
     from docpack.ingest.freeze import detect_source
-    from docpack.storage import init_db, insert_file, set_metadata, get_stats
+    from docpack.storage import init_db, insert_file, insert_image, set_metadata, get_stats
     from docpack.runtime import get_global_config
     from docpack import FORMAT_VERSION, __version__
     from datetime import datetime, timezone
@@ -247,28 +248,79 @@ def _run_pipeline_sync(target_path: str, output_path: Path, progress_update_fn):
 
     file_count = 0
     total_bytes = 0
+    image_count = 0
 
     with source:
         for vfile in source.walk():
             content_bytes = vfile.read_bytes()
             is_binary = vfile.is_binary()
 
-            text_content: str | None = None
-            if not is_binary:
-                text_content = content_bytes.decode("utf-8", errors="replace")
+            # Check if this is an extractable document (PDF, DOCX, PPTX)
+            if can_extract(vfile.extension or ""):
+                try:
+                    extracted = extract_document(content_bytes, vfile.extension or "")
 
-            insert_file(
-                conn,
-                path=vfile.path,
-                size_bytes=vfile.size,
-                sha256_hash=vfile.sha256(),
-                content=text_content,
-                is_binary=is_binary,
-                extension=vfile.extension,
-            )
+                    # Insert file with extracted text
+                    file_id = insert_file(
+                        conn,
+                        path=vfile.path,
+                        size_bytes=vfile.size,
+                        sha256_hash=vfile.sha256(),
+                        content=extracted.text,
+                        is_binary=False,  # Text was extracted
+                        extension=vfile.extension,
+                    )
 
-            file_count += 1
-            total_bytes += vfile.size
+                    # Store extracted images
+                    for img in extracted.images:
+                        insert_image(
+                            conn,
+                            file_id=file_id,
+                            image_index=img.image_index,
+                            format=img.format,
+                            width=img.width,
+                            height=img.height,
+                            image_data=img.data,
+                            page_number=img.page_number,
+                            context=img.context,
+                        )
+                        image_count += 1
+
+                    file_count += 1
+                    total_bytes += vfile.size
+
+                except Exception as e:
+                    # Fall back to binary storage if extraction fails
+                    print(f"[warn] Failed to extract {vfile.path}: {e}")
+                    insert_file(
+                        conn,
+                        path=vfile.path,
+                        size_bytes=vfile.size,
+                        sha256_hash=vfile.sha256(),
+                        content=None,
+                        is_binary=True,
+                        extension=vfile.extension,
+                    )
+                    file_count += 1
+                    total_bytes += vfile.size
+            else:
+                # Regular file handling
+                text_content: str | None = None
+                if not is_binary:
+                    text_content = content_bytes.decode("utf-8", errors="replace")
+
+                insert_file(
+                    conn,
+                    path=vfile.path,
+                    size_bytes=vfile.size,
+                    sha256_hash=vfile.sha256(),
+                    content=text_content,
+                    is_binary=is_binary,
+                    extension=vfile.extension,
+                )
+
+                file_count += 1
+                total_bytes += vfile.size
 
             if file_count % 10 == 0 or file_count == total_files:
                 progress_update_fn("freezing", file_count, total_files)
@@ -280,6 +332,8 @@ def _run_pipeline_sync(target_path: str, output_path: Path, progress_update_fn):
     set_metadata(conn, "source", target_path)
     set_metadata(conn, "file_count", str(file_count))
     set_metadata(conn, "total_bytes", str(total_bytes))
+    if image_count > 0:
+        set_metadata(conn, "image_count", str(image_count))
 
     stats = get_stats(conn)
     progress_update_fn("freezing_done", file_count, total_files, stats)
@@ -318,6 +372,27 @@ def _run_pipeline_sync(target_path: str, output_path: Path, progress_update_fn):
 
         stats = get_stats(conn)
         progress_update_fn("summarizing_done", chunk_count, chunk_count, stats)
+
+    # Vision analysis phase - analyze images from PDFs/DOCX/PPTX
+    if image_count > 0:
+        from docpack.vision import vision_all
+
+        progress_update_fn("vision", 0, image_count)
+
+        def vision_progress(current: int, total: int):
+            progress_update_fn("vision", current, total)
+
+        try:
+            analyzed = vision_all(conn, config=config, verbose=False, progress_callback=vision_progress)
+            # Re-embed the new image description chunks
+            if analyzed > 0:
+                embed_all(conn, config=config, verbose=False)
+        except Exception as e:
+            # Vision is optional - continue if it fails (e.g., no Ollama)
+            print(f"Vision analysis skipped: {e}")
+
+        stats = get_stats(conn)
+        progress_update_fn("vision_done", image_count, image_count, stats)
 
     conn.close()
     return stats
@@ -359,6 +434,8 @@ async def run_pipeline(target_path: str):
                     state.phase_times[base_phase] = time.time() - state.phase_start_time
 
                 # Transition to next phase and reset phase timer
+                # Note: vision phase only runs if there are images, so summarizing
+                # may go directly to ready if no vision phase follows
                 if base_phase == "freezing":
                     state.stage = "chunking"
                     state.phase_start_time = time.time()
@@ -369,6 +446,10 @@ async def run_pipeline(target_path: str):
                     state.stage = "summarizing"
                     state.phase_start_time = time.time()
                 elif base_phase == "summarizing":
+                    # Vision phase will set its own stage if it runs
+                    # Otherwise we'll go to ready after the pipeline finishes
+                    state.phase_start_time = time.time()
+                elif base_phase == "vision":
                     state.stage = "ready"
                     state.phase_start_time = None  # Pipeline complete
             else:
@@ -564,6 +645,43 @@ async def clear_staged_files():
     """Clear all staged files."""
     state.clear_staging()
     return {"status": "cleared"}
+
+
+@app.post("/api/unload")
+async def unload_docpack():
+    """Unload the current docpack and reset to idle state."""
+    if state.stage not in ("ready", "error"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot unload in current state: {state.stage}"
+        )
+
+    # Clean up docpack file
+    if state.docpack_path and state.docpack_path.exists():
+        try:
+            state.docpack_path.unlink()
+        except OSError:
+            pass
+
+    # Reset state
+    state.docpack_path = None
+    state.stage = "idle"
+    state.error = None
+    state.progress_phase = ""
+    state.progress_current = 0
+    state.progress_total = 0
+    state.stats = {}
+    state.pipeline_start_time = None
+    state.phase_start_time = None
+    state.phase_times = {}
+
+    # Also clear staged files
+    state.clear_staging()
+
+    # Broadcast the reset state
+    await broadcast_state()
+
+    return {"status": "unloaded"}
 
 
 @app.get("/api/events")

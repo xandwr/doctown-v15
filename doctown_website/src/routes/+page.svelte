@@ -100,7 +100,7 @@
 	);
 
 	let isProcessing = $derived(
-		stage === 'freezing' || stage === 'chunking' || stage === 'embedding' || stage === 'summarizing'
+		stage === 'freezing' || stage === 'chunking' || stage === 'embedding' || stage === 'summarizing' || stage === 'vision'
 	);
 
 	let canSearch = $derived(stage === 'ready' && !isAsking);
@@ -134,8 +134,8 @@
 			}
 
 			// Handle processing timer
-			const isNowProcessing = ['freezing', 'chunking', 'embedding', 'summarizing'].includes(data.stage);
-			const wasProcessing = ['freezing', 'chunking', 'embedding', 'summarizing'].includes(prevStage);
+			const isNowProcessing = ['freezing', 'chunking', 'embedding', 'summarizing', 'vision'].includes(data.stage);
+			const wasProcessing = ['freezing', 'chunking', 'embedding', 'summarizing', 'vision'].includes(prevStage);
 			const timerRunning = processingTimerInterval !== null;
 
 			// Start timer when processing begins OR if we connect while already processing
@@ -222,6 +222,29 @@
 				error = data.detail || 'Failed to start processing';
 			}
 			// SSE will update the stage automatically
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Network error';
+		}
+	}
+
+	async function handleUnload() {
+		try {
+			const response = await fetch('/api/unload', {
+				method: 'POST'
+			});
+
+			if (!response.ok) {
+				const data = await response.json();
+				error = data.detail || 'Failed to unload';
+			} else {
+				// Reset local state
+				answerResponse = null;
+				searchQuery = '';
+				finalPipelineTime = null;
+				timing = null;
+				stats = null;
+				// SSE will update stage to 'idle'
+			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Network error';
 		}
@@ -443,6 +466,7 @@
 			case 'chunking': return 'Chunking text';
 			case 'embedding': return 'Generating embeddings';
 			case 'summarizing': return 'Generating summaries';
+			case 'vision': return 'Analyzing images';
 			default: return phase;
 		}
 	}
@@ -681,7 +705,9 @@
 				</div>
 
 				<p class="text-white/40 text-xs sm:text-sm mt-2">
-					{#if stage === 'summarizing'}
+					{#if stage === 'vision'}
+						Analyzing images with vision model...
+					{:else if stage === 'summarizing'}
 						Generating AI summaries for better answers...
 					{:else if stage === 'embedding'}
 						Creating semantic vectors...
@@ -851,6 +877,15 @@
 							<span class="text-blue-400 font-mono">{formatTime(finalPipelineTime)}</span>
 						{/if}
 					</div>
+				{/if}
+				<!-- Unload button (show when ready) -->
+				{#if stage === 'ready'}
+					<button
+						onclick={handleUnload}
+						class="mt-2 px-3 py-1 text-xs text-white/40 hover:text-white/70 hover:bg-white/5 rounded-lg transition-colors"
+					>
+						Clear & start over
+					</button>
 				{/if}
 			</div>
 		{/if}
