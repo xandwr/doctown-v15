@@ -663,7 +663,7 @@
 	}
 </script>
 
-<main class="min-h-screen bg-gradient-to-b from-slate-900 to-slate-800 flex flex-col items-center px-3 py-6 sm:px-4 sm:py-12">
+<main class="min-h-screen bg-slate-900 flex flex-col items-center px-3 py-6 sm:px-4 sm:py-12">
 	<div class="w-full max-w-3xl flex flex-col items-center gap-4 sm:gap-6">
 		<!-- Logo/Title -->
 		<h1 class="text-3xl sm:text-4xl font-bold text-white tracking-tight">
