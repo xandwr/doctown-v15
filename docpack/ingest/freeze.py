@@ -183,10 +183,10 @@ def freeze(
                 content_bytes = vfile.read_bytes()
                 is_binary = vfile.is_binary()
 
-                # Check if this is an extractable document (PDF, DOCX, PPTX)
+                # Check if this is an extractable document (PDF, DOCX, PPTX) or image
                 if can_extract(vfile.extension or ""):
                     try:
-                        extracted = extract_document(content_bytes, vfile.extension or "")
+                        extracted = extract_document(content_bytes, vfile.extension or "", vfile.path)
 
                         # Insert file with extracted text
                         file_id = insert_file(

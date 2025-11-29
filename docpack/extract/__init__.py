@@ -1,20 +1,25 @@
-"""Document extraction module for PDF, DOCX, and PPTX files."""
+"""Document extraction module for PDF, DOCX, PPTX, and image files."""
 
 from __future__ import annotations
 
 from .base import ExtractedDocument, ExtractedImage
+from .image import IMAGE_EXTENSIONS, can_extract_image, extract_image
 
-# Extensions that can be extracted
-EXTRACTABLE_EXTENSIONS: frozenset[str] = frozenset({".pdf", ".docx", ".pptx"})
+# Extensions that can be extracted (documents)
+DOCUMENT_EXTENSIONS: frozenset[str] = frozenset({".pdf", ".docx", ".pptx"})
+
+# All extractable extensions (documents + images)
+EXTRACTABLE_EXTENSIONS: frozenset[str] = DOCUMENT_EXTENSIONS | IMAGE_EXTENSIONS
 
 
-def extract_document(data: bytes, extension: str) -> ExtractedDocument:
+def extract_document(data: bytes, extension: str, filename: str = "") -> ExtractedDocument:
     """
-    Extract text and images from a document based on its extension.
+    Extract text and images from a document or image based on its extension.
 
     Args:
-        data: Raw document bytes
-        extension: File extension (e.g., '.pdf', '.docx', '.pptx')
+        data: Raw file bytes
+        extension: File extension (e.g., '.pdf', '.docx', '.pptx', '.png')
+        filename: Original filename (used for context in image extraction)
 
     Returns:
         ExtractedDocument with text content and embedded images
@@ -36,6 +41,8 @@ def extract_document(data: bytes, extension: str) -> ExtractedDocument:
         from .pptx import extract_pptx
 
         return extract_pptx(data)
+    elif ext in IMAGE_EXTENSIONS:
+        return extract_image(data, filename or "image")
     else:
         raise ValueError(f"Unsupported document format: {extension}")
 
@@ -49,6 +56,10 @@ __all__ = [
     "ExtractedDocument",
     "ExtractedImage",
     "EXTRACTABLE_EXTENSIONS",
+    "DOCUMENT_EXTENSIONS",
+    "IMAGE_EXTENSIONS",
     "extract_document",
+    "extract_image",
     "can_extract",
+    "can_extract_image",
 ]

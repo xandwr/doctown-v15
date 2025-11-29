@@ -42,11 +42,11 @@ BINARY_SIGNATURES: list[bytes] = [
 ]
 
 # Extensions that are always binary
-# Note: PDF, DOCX, PPTX are listed here but handled specially by the
-# extraction module in freeze.py - they get extracted to text + images
+# Note: PDF, DOCX, PPTX, and images are listed here but handled specially
+# by the extraction module in freeze.py - they get extracted to text + images
 BINARY_EXTENSIONS: frozenset[str] = frozenset(
     {
-        # Images
+        # Images (extracted by docpack.extract module for vision analysis)
         ".png",
         ".jpg",
         ".jpeg",
