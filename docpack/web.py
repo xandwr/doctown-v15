@@ -260,7 +260,7 @@ def _run_pipeline_sync(target_path: str, output_path: Path, progress_update_fn):
             progress_update_fn("summarizing", current, total)
 
         try:
-            summarize_all(conn, verbose=False, progress_callback=summarize_progress)
+            summarize_all(conn, config=config, verbose=False, progress_callback=summarize_progress)
         except Exception as e:
             # Summarization is optional - continue if it fails (e.g., no Ollama)
             print(f"Summarization skipped: {e}")

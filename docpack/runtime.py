@@ -47,9 +47,9 @@ class RuntimeConfig:
     def __post_init__(self):
         """Adjust settings based on CPU mode."""
         if self.force_cpu:
-            # Smaller batches for CPU to avoid memory pressure
-            self.embedding_batch_size = 4
-            self.summarize_batch_size = 2
+            # No batching for CPU - process one at a time, rely on parallelism
+            self.embedding_batch_size = 1
+            self.summarize_batch_size = 1
             # More parallel workers to compensate
             self.parallel_workers = max(4, os.cpu_count() or 4)
 
