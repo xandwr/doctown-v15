@@ -201,6 +201,63 @@ class AskResponse(BaseModel):
 
 
 # =============================================================================
+# Docpack Browser Models
+# =============================================================================
+
+
+class DocpackFileModel(BaseModel):
+    """A file in the docpack."""
+
+    id: int
+    path: str
+    extension: str | None
+    size_bytes: int
+    is_binary: bool
+    chunk_count: int
+    preview: str | None = None  # First 200 chars of content
+
+
+class DocpackChunkModel(BaseModel):
+    """A chunk within a file."""
+
+    id: int
+    chunk_index: int
+    text: str
+    token_count: int
+    start_char: int
+    end_char: int
+    summary: str | None = None
+    media_type: str | None = None
+
+
+class DocpackOverviewResponse(BaseModel):
+    """Complete docpack overview for the explorer."""
+
+    metadata: dict[str, str | None]
+    files: list[DocpackFileModel]
+    stats: dict[str, int]
+
+
+class DocpackFileDetailResponse(BaseModel):
+    """Detailed view of a single file with all its chunks."""
+
+    file: DocpackFileModel
+    content: str | None  # Full file content
+    chunks: list[DocpackChunkModel]
+
+
+class CitationContextResponse(BaseModel):
+    """Full context for an expanded citation."""
+
+    file_path: str
+    file_id: int
+    chunk: DocpackChunkModel
+    full_text: str  # The complete chunk text
+    prev_chunk: DocpackChunkModel | None = None
+    next_chunk: DocpackChunkModel | None = None
+
+
+# =============================================================================
 # Pipeline Runner
 # =============================================================================
 
@@ -889,6 +946,263 @@ async def ask(request: AskRequest):
             sources_retrieved=result.sources_retrieved,
             sources_used=result.sources_used,
         )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Docpack Browser API
+# =============================================================================
+
+
+def _get_docpack_overview_sync(docpack_path: Path) -> dict:
+    """Get complete docpack overview in a thread."""
+    conn = sqlite3.connect(str(docpack_path), check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    try:
+        # Get metadata
+        metadata = {}
+        cursor = conn.execute("SELECT key, value FROM metadata")
+        for row in cursor:
+            metadata[row["key"]] = row["value"]
+
+        # Get files with chunk counts
+        files = []
+        cursor = conn.execute("""
+            SELECT
+                f.id, f.path, f.extension, f.size_bytes, f.is_binary, f.content,
+                COUNT(c.id) as chunk_count
+            FROM files f
+            LEFT JOIN chunks c ON c.file_id = f.id
+            GROUP BY f.id
+            ORDER BY f.path
+        """)
+        for row in cursor:
+            content = row["content"]
+            preview = None
+            if content and not row["is_binary"]:
+                preview = content[:200] + ("..." if len(content) > 200 else "")
+            files.append({
+                "id": row["id"],
+                "path": row["path"],
+                "extension": row["extension"],
+                "size_bytes": row["size_bytes"],
+                "is_binary": bool(row["is_binary"]),
+                "chunk_count": row["chunk_count"],
+                "preview": preview,
+            })
+
+        # Get stats
+        stats = {}
+        cursor = conn.execute("SELECT COUNT(*) FROM files")
+        stats["total_files"] = cursor.fetchone()[0]
+        cursor = conn.execute("SELECT COUNT(*) FROM chunks")
+        stats["total_chunks"] = cursor.fetchone()[0]
+        cursor = conn.execute("SELECT COUNT(*) FROM vectors")
+        stats["total_vectors"] = cursor.fetchone()[0]
+        cursor = conn.execute("SELECT COALESCE(SUM(size_bytes), 0) FROM files")
+        stats["total_size_bytes"] = cursor.fetchone()[0]
+        cursor = conn.execute("SELECT COUNT(*) FROM images")
+        stats["total_images"] = cursor.fetchone()[0]
+
+        return {"metadata": metadata, "files": files, "stats": stats}
+    finally:
+        conn.close()
+
+
+@app.get("/api/docpack/overview", response_model=DocpackOverviewResponse)
+async def get_docpack_overview():
+    """Get complete docpack overview for the explorer."""
+    if state.stage != "ready" or state.docpack_path is None:
+        raise HTTPException(status_code=400, detail="No docpack loaded")
+
+    try:
+        result = await asyncio.to_thread(_get_docpack_overview_sync, state.docpack_path)
+        return DocpackOverviewResponse(**result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _get_file_detail_sync(docpack_path: Path, file_id: int) -> dict:
+    """Get detailed file view in a thread."""
+    conn = sqlite3.connect(str(docpack_path), check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    try:
+        # Get file info
+        cursor = conn.execute(
+            "SELECT id, path, extension, size_bytes, is_binary, content FROM files WHERE id = ?",
+            (file_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        content = row["content"]
+        preview = None
+        if content and not row["is_binary"]:
+            preview = content[:200] + ("..." if len(content) > 200 else "")
+
+        # Get chunk count
+        cursor = conn.execute("SELECT COUNT(*) FROM chunks WHERE file_id = ?", (file_id,))
+        chunk_count = cursor.fetchone()[0]
+
+        file_data = {
+            "id": row["id"],
+            "path": row["path"],
+            "extension": row["extension"],
+            "size_bytes": row["size_bytes"],
+            "is_binary": bool(row["is_binary"]),
+            "chunk_count": chunk_count,
+            "preview": preview,
+        }
+
+        # Get all chunks for this file
+        chunks = []
+        cursor = conn.execute("""
+            SELECT id, chunk_index, text, token_count, start_char, end_char, summary, media_type
+            FROM chunks
+            WHERE file_id = ?
+            ORDER BY chunk_index
+        """, (file_id,))
+        for chunk_row in cursor:
+            chunks.append({
+                "id": chunk_row["id"],
+                "chunk_index": chunk_row["chunk_index"],
+                "text": chunk_row["text"],
+                "token_count": chunk_row["token_count"],
+                "start_char": chunk_row["start_char"],
+                "end_char": chunk_row["end_char"],
+                "summary": chunk_row["summary"],
+                "media_type": chunk_row["media_type"],
+            })
+
+        return {
+            "file": file_data,
+            "content": content,
+            "chunks": chunks,
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/docpack/file/{file_id}", response_model=DocpackFileDetailResponse)
+async def get_file_detail(file_id: int):
+    """Get detailed view of a single file with all its chunks."""
+    if state.stage != "ready" or state.docpack_path is None:
+        raise HTTPException(status_code=400, detail="No docpack loaded")
+
+    try:
+        result = await asyncio.to_thread(_get_file_detail_sync, state.docpack_path, file_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail=f"File not found: {file_id}")
+        return DocpackFileDetailResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _get_citation_context_sync(docpack_path: Path, file_path: str, chunk_index: int) -> dict:
+    """Get citation context in a thread."""
+    conn = sqlite3.connect(str(docpack_path), check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    try:
+        # Get file ID from path
+        cursor = conn.execute("SELECT id FROM files WHERE path = ?", (file_path,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        file_id = row["id"]
+
+        # Get the target chunk
+        cursor = conn.execute("""
+            SELECT id, chunk_index, text, token_count, start_char, end_char, summary, media_type
+            FROM chunks
+            WHERE file_id = ? AND chunk_index = ?
+        """, (file_id, chunk_index))
+        chunk_row = cursor.fetchone()
+        if not chunk_row:
+            return None
+
+        chunk = {
+            "id": chunk_row["id"],
+            "chunk_index": chunk_row["chunk_index"],
+            "text": chunk_row["text"],
+            "token_count": chunk_row["token_count"],
+            "start_char": chunk_row["start_char"],
+            "end_char": chunk_row["end_char"],
+            "summary": chunk_row["summary"],
+            "media_type": chunk_row["media_type"],
+        }
+
+        # Get previous chunk
+        prev_chunk = None
+        if chunk_index > 0:
+            cursor = conn.execute("""
+                SELECT id, chunk_index, text, token_count, start_char, end_char, summary, media_type
+                FROM chunks
+                WHERE file_id = ? AND chunk_index = ?
+            """, (file_id, chunk_index - 1))
+            prev_row = cursor.fetchone()
+            if prev_row:
+                prev_chunk = {
+                    "id": prev_row["id"],
+                    "chunk_index": prev_row["chunk_index"],
+                    "text": prev_row["text"],
+                    "token_count": prev_row["token_count"],
+                    "start_char": prev_row["start_char"],
+                    "end_char": prev_row["end_char"],
+                    "summary": prev_row["summary"],
+                    "media_type": prev_row["media_type"],
+                }
+
+        # Get next chunk
+        next_chunk = None
+        cursor = conn.execute("""
+            SELECT id, chunk_index, text, token_count, start_char, end_char, summary, media_type
+            FROM chunks
+            WHERE file_id = ? AND chunk_index = ?
+        """, (file_id, chunk_index + 1))
+        next_row = cursor.fetchone()
+        if next_row:
+            next_chunk = {
+                "id": next_row["id"],
+                "chunk_index": next_row["chunk_index"],
+                "text": next_row["text"],
+                "token_count": next_row["token_count"],
+                "start_char": next_row["start_char"],
+                "end_char": next_row["end_char"],
+                "summary": next_row["summary"],
+                "media_type": next_row["media_type"],
+            }
+
+        return {
+            "file_path": file_path,
+            "file_id": file_id,
+            "chunk": chunk,
+            "full_text": chunk_row["text"],
+            "prev_chunk": prev_chunk,
+            "next_chunk": next_chunk,
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/citation/{file_path:path}/{chunk_index}", response_model=CitationContextResponse)
+async def get_citation_context(file_path: str, chunk_index: int):
+    """Get full context for an expanded citation."""
+    if state.stage != "ready" or state.docpack_path is None:
+        raise HTTPException(status_code=400, detail="No docpack loaded")
+
+    try:
+        result = await asyncio.to_thread(
+            _get_citation_context_sync, state.docpack_path, file_path, chunk_index
+        )
+        if result is None:
+            raise HTTPException(status_code=404, detail=f"Citation not found: {file_path}:{chunk_index}")
+        return CitationContextResponse(**result)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

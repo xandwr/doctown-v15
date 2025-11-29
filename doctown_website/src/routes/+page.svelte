@@ -11,6 +11,15 @@
 		end_char: number | null;
 	}
 
+	interface CitationContext {
+		file_path: string;
+		file_id: number;
+		chunk: DocpackChunk;
+		full_text: string;
+		prev_chunk: DocpackChunk | null;
+		next_chunk: DocpackChunk | null;
+	}
+
 	interface AnswerResponse {
 		answer: string;
 		citations: Citation[];
@@ -57,6 +66,40 @@
 		file_count: number;
 	}
 
+	// Docpack Explorer Types
+	interface DocpackFile {
+		id: number;
+		path: string;
+		extension: string | null;
+		size_bytes: number;
+		is_binary: boolean;
+		chunk_count: number;
+		preview: string | null;
+	}
+
+	interface DocpackChunk {
+		id: number;
+		chunk_index: number;
+		text: string;
+		token_count: number;
+		start_char: number;
+		end_char: number;
+		summary: string | null;
+		media_type: string | null;
+	}
+
+	interface DocpackOverview {
+		metadata: Record<string, string | null>;
+		files: DocpackFile[];
+		stats: Record<string, number>;
+	}
+
+	interface DocpackFileDetail {
+		file: DocpackFile;
+		content: string | null;
+		chunks: DocpackChunk[];
+	}
+
 	// State
 	let stage = $state<string>('idle');
 	let directoryPath = $state('');
@@ -94,6 +137,22 @@
 	let localPipelineElapsed = $state<number>(0);
 	let processingTimerInterval = $state<ReturnType<typeof setInterval> | null>(null);
 
+	// Expandable citations state
+	let expandedCitations = $state<Set<number>>(new Set());
+	let citationContexts = $state<Map<number, CitationContext>>(new Map());
+	let loadingCitations = $state<Set<number>>(new Set());
+
+	// Docpack explorer state
+	let showExplorer = $state(false);
+	let docpackOverview = $state<DocpackOverview | null>(null);
+	let selectedFile = $state<DocpackFileDetail | null>(null);
+	let selectedChunk = $state<DocpackChunk | null>(null);
+	let loadingOverview = $state(false);
+	let loadingFile = $state(false);
+	let explorerSearch = $state('');
+	let explorerView = $state<'files' | 'chunks' | 'content'>('files');
+	let expandedChunks = $state<Set<number>>(new Set());
+
 	// Derived
 	let progressPercent = $derived(
 		progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0
@@ -120,15 +179,15 @@
 			error = data.error;
 			if (data.timing) {
 				timing = data.timing;
-				// Capture final pipeline time when transitioning to ready
-				if (prevStage !== 'ready' && data.stage === 'ready' && data.timing.pipeline_elapsed) {
-					finalPipelineTime = data.timing.pipeline_elapsed;
-				}
-				// Also calculate from phase_times if we're in ready state and don't have finalPipelineTime yet
-				if (data.stage === 'ready' && !finalPipelineTime && data.timing.phase_times) {
-					const totalFromPhases = Object.values(data.timing.phase_times).reduce((sum, t) => sum + t, 0);
-					if (totalFromPhases > 0) {
-						finalPipelineTime = totalFromPhases;
+				// Capture final pipeline time when transitioning to ready or on initial connect to ready state
+				// Prefer phase_times sum (accurate) over pipeline_elapsed (wall clock which keeps ticking)
+				if (data.stage === 'ready' && !finalPipelineTime) {
+					if (data.timing.phase_times && Object.keys(data.timing.phase_times).length > 0) {
+						// Use sum of phase times - this is the accurate measure
+						const totalFromPhases = Object.values(data.timing.phase_times as Record<string, number>).reduce((sum, t) => sum + t, 0);
+						if (totalFromPhases > 0) {
+							finalPipelineTime = totalFromPhases;
+						}
 					}
 				}
 			}
@@ -488,6 +547,120 @@
 			default: return '-';
 		}
 	}
+
+	// Citation expansion handlers
+	async function toggleCitation(citation: Citation) {
+		const key = citation.id;
+		if (expandedCitations.has(key)) {
+			// Collapse
+			expandedCitations = new Set([...expandedCitations].filter(k => k !== key));
+		} else {
+			// Expand - fetch context if not already loaded
+			if (!citationContexts.has(key)) {
+				loadingCitations = new Set([...loadingCitations, key]);
+				try {
+					const response = await fetch(`/api/citation/${encodeURIComponent(citation.file_path)}/${citation.chunk_index}`);
+					if (response.ok) {
+						const context: CitationContext = await response.json();
+						citationContexts = new Map([...citationContexts, [key, context]]);
+					}
+				} catch (e) {
+					console.error('Failed to load citation context:', e);
+				} finally {
+					loadingCitations = new Set([...loadingCitations].filter(k => k !== key));
+				}
+			}
+			expandedCitations = new Set([...expandedCitations, key]);
+		}
+	}
+
+	// Docpack explorer handlers
+	async function openExplorer() {
+		showExplorer = true;
+		if (!docpackOverview) {
+			await loadDocpackOverview();
+		}
+	}
+
+	function closeExplorer() {
+		showExplorer = false;
+		selectedFile = null;
+		selectedChunk = null;
+		explorerView = 'files';
+	}
+
+	async function loadDocpackOverview() {
+		loadingOverview = true;
+		try {
+			const response = await fetch('/api/docpack/overview');
+			if (response.ok) {
+				docpackOverview = await response.json();
+			}
+		} catch (e) {
+			console.error('Failed to load docpack overview:', e);
+		} finally {
+			loadingOverview = false;
+		}
+	}
+
+	async function selectFile(file: DocpackFile) {
+		loadingFile = true;
+		explorerView = 'chunks';
+		selectedChunk = null;
+		try {
+			const response = await fetch(`/api/docpack/file/${file.id}`);
+			if (response.ok) {
+				selectedFile = await response.json();
+			}
+		} catch (e) {
+			console.error('Failed to load file detail:', e);
+		} finally {
+			loadingFile = false;
+		}
+	}
+
+	function selectChunk(chunk: DocpackChunk) {
+		selectedChunk = chunk;
+		explorerView = 'content';
+	}
+
+	function backToFiles() {
+		selectedFile = null;
+		selectedChunk = null;
+		explorerView = 'files';
+	}
+
+	function backToChunks() {
+		selectedChunk = null;
+		explorerView = 'chunks';
+	}
+
+	function toggleChunkExpand(chunkId: number) {
+		if (expandedChunks.has(chunkId)) {
+			expandedChunks = new Set([...expandedChunks].filter(id => id !== chunkId));
+		} else {
+			expandedChunks = new Set([...expandedChunks, chunkId]);
+		}
+	}
+
+	// Filtered files for explorer search
+	let filteredFiles = $derived(
+		docpackOverview?.files.filter(f =>
+			f.path.toLowerCase().includes(explorerSearch.toLowerCase())
+		) ?? []
+	);
+
+	function getExtensionColor(ext: string | null): string {
+		if (!ext) return 'bg-gray-500/20 text-gray-400';
+		const codeExts = ['js', 'ts', 'jsx', 'tsx', 'py', 'rb', 'go', 'rs', 'java', 'c', 'cpp', 'cs'];
+		const docExts = ['md', 'txt', 'rst'];
+		const dataExts = ['json', 'yaml', 'yml', 'xml', 'csv', 'toml'];
+		if (codeExts.includes(ext)) return 'bg-blue-500/20 text-blue-400';
+		if (docExts.includes(ext)) return 'bg-green-500/20 text-green-400';
+		if (dataExts.includes(ext)) return 'bg-yellow-500/20 text-yellow-400';
+		if (ext === 'pdf') return 'bg-red-500/20 text-red-400';
+		return 'bg-purple-500/20 text-purple-400';
+	}
 </script>
 
 <main class="min-h-screen bg-gradient-to-b from-slate-900 to-slate-800 flex flex-col items-center px-3 py-6 sm:px-4 sm:py-12">
@@ -796,39 +969,137 @@
 					</div>
 				</div>
 
-				<!-- Citations -->
+				<!-- Citations (Expandable) -->
 				{#if answerResponse.citations.length > 0}
 					<div class="space-y-2">
-						<h3 class="text-white/50 text-xs font-medium uppercase tracking-wide px-1">Sources</h3>
+						<h3 class="text-white/50 text-xs font-medium uppercase tracking-wide px-1">Sources (click to expand)</h3>
 						{#each answerResponse.citations as citation}
-							<div class="bg-white/4 border border-white/8 rounded-lg sm:rounded-xl p-3 sm:p-4 hover:bg-white/6 transition-colors group">
-								<div class="flex items-start gap-2 sm:gap-3">
-									<!-- Citation number -->
-									<span class="text-blue-400 font-mono text-xs sm:text-sm font-medium shrink-0">
-										[{citation.id}]
-									</span>
-									<div class="flex-1 min-w-0">
-										<!-- File path -->
-										<div class="flex flex-col sm:flex-row sm:items-center gap-0.5 sm:gap-2 mb-1.5 sm:mb-2">
-											<span class="text-blue-300 text-xs sm:text-sm font-medium truncate">
-												{citation.file_path}
-											</span>
-											{#if citation.start_char !== null}
-												<span class="text-white/30 text-xs">
-													chars {citation.start_char}-{citation.end_char}
+							{@const isExpanded = expandedCitations.has(citation.id)}
+							{@const isLoading = loadingCitations.has(citation.id)}
+							{@const context = citationContexts.get(citation.id)}
+							<div class="bg-white/4 border border-white/8 rounded-lg sm:rounded-xl overflow-hidden transition-all">
+								<!-- Collapsed header (always visible, clickable) -->
+								<button
+									onclick={() => toggleCitation(citation)}
+									class="w-full p-3 sm:p-4 hover:bg-white/6 transition-colors text-left"
+								>
+									<div class="flex items-start gap-2 sm:gap-3">
+										<!-- Citation number -->
+										<span class="text-blue-400 font-mono text-xs sm:text-sm font-medium shrink-0">
+											[{citation.id}]
+										</span>
+										<div class="flex-1 min-w-0">
+											<!-- File path -->
+											<div class="flex flex-col sm:flex-row sm:items-center gap-0.5 sm:gap-2 mb-1.5 sm:mb-2">
+												<span class="text-blue-300 text-xs sm:text-sm font-medium truncate">
+													{citation.file_path}
 												</span>
-											{:else}
-												<span class="text-white/30 text-xs">
-													chunk {citation.chunk_index}
-												</span>
+												{#if citation.start_char !== null}
+													<span class="text-white/30 text-xs">
+														chars {citation.start_char}-{citation.end_char}
+													</span>
+												{:else}
+													<span class="text-white/30 text-xs">
+														chunk {citation.chunk_index}
+													</span>
+												{/if}
+											</div>
+											<!-- Quote preview -->
+											{#if !isExpanded}
+												<p class="text-white/60 text-xs sm:text-sm leading-relaxed line-clamp-2">
+													"{citation.quote}"
+												</p>
 											{/if}
 										</div>
-										<!-- Quote -->
-										<p class="text-white/60 text-xs sm:text-sm leading-relaxed line-clamp-2">
-											"{citation.quote}"
-										</p>
+										<!-- Expand indicator -->
+										<div class="shrink-0 text-white/30">
+											{#if isLoading}
+												<svg class="h-4 w-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+													<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+													<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+												</svg>
+											{:else}
+												<svg class="h-4 w-4 transition-transform {isExpanded ? 'rotate-180' : ''}" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+													<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+												</svg>
+											{/if}
+										</div>
 									</div>
-								</div>
+								</button>
+
+								<!-- Expanded content -->
+								{#if isExpanded && context}
+									<div class="border-t border-white/10 bg-black/20">
+										<!-- Context navigation -->
+										{#if context.prev_chunk || context.next_chunk}
+											<div class="flex items-center justify-between px-4 py-2 border-b border-white/5 text-xs">
+												<span class="text-white/40">
+													Chunk {context.chunk.chunk_index + 1} of file
+												</span>
+												<div class="flex gap-2">
+													{#if context.prev_chunk}
+														<span class="text-white/30">← prev</span>
+													{/if}
+													{#if context.next_chunk}
+														<span class="text-white/30">next →</span>
+													{/if}
+												</div>
+											</div>
+										{/if}
+
+										<!-- Previous chunk (faded) -->
+										{#if context.prev_chunk}
+											<div class="px-4 py-3 bg-white/2 border-b border-white/5">
+												<div class="text-white/25 text-xs mb-1 font-mono">↑ Previous chunk</div>
+												<p class="text-white/30 text-xs sm:text-sm leading-relaxed line-clamp-3 font-mono">
+													{context.prev_chunk.text}
+												</p>
+											</div>
+										{/if}
+
+										<!-- Main chunk (highlighted) -->
+										<div class="px-4 py-4 bg-blue-500/5 border-l-2 border-blue-400">
+											<div class="flex items-center gap-2 mb-2">
+												<span class="text-blue-400 text-xs font-medium">Source content</span>
+												{#if context.chunk.summary}
+													<span class="text-white/30 text-xs">• {context.chunk.token_count} tokens</span>
+												{/if}
+											</div>
+											<p class="text-white/80 text-sm sm:text-base leading-relaxed font-mono whitespace-pre-wrap">
+												{context.full_text}
+											</p>
+											{#if context.chunk.summary}
+												<div class="mt-3 pt-3 border-t border-white/10">
+													<span class="text-white/40 text-xs">Summary: </span>
+													<span class="text-white/60 text-xs">{context.chunk.summary}</span>
+												</div>
+											{/if}
+										</div>
+
+										<!-- Next chunk (faded) -->
+										{#if context.next_chunk}
+											<div class="px-4 py-3 bg-white/2 border-t border-white/5">
+												<div class="text-white/25 text-xs mb-1 font-mono">↓ Next chunk</div>
+												<p class="text-white/30 text-xs sm:text-sm leading-relaxed line-clamp-3 font-mono">
+													{context.next_chunk.text}
+												</p>
+											</div>
+										{/if}
+
+										<!-- Actions -->
+										<div class="px-4 py-2 border-t border-white/10 flex items-center justify-between">
+											<span class="text-white/30 text-xs">
+												chars {context.chunk.start_char}-{context.chunk.end_char}
+											</span>
+											<button
+												onclick={() => { selectFile({ id: context.file_id, path: context.file_path, extension: null, size_bytes: 0, is_binary: false, chunk_count: 0, preview: null }); openExplorer(); }}
+												class="text-blue-400/70 hover:text-blue-400 text-xs transition-colors"
+											>
+												View full file →
+											</button>
+										</div>
+									</div>
+								{/if}
 							</div>
 						{/each}
 					</div>
@@ -839,6 +1110,22 @@
 		<!-- Stats Panel (show when ready) -->
 		{#if stats && (stage === 'ready' || isProcessing)}
 			<div class="w-full flex flex-col items-center gap-1.5 sm:gap-2 mt-2 sm:mt-4">
+				<!-- Explore button (prominent when ready) -->
+				{#if stage === 'ready'}
+					<button
+						onclick={openExplorer}
+						class="group flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-600/20 to-purple-600/20 hover:from-blue-600/30 hover:to-purple-600/30 border border-white/10 hover:border-white/20 rounded-xl transition-all"
+					>
+						<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
+						</svg>
+						<span class="text-white/80 text-sm font-medium">Explore Documents</span>
+						<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 text-white/40 group-hover:text-white/60 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+						</svg>
+					</button>
+				{/if}
+
 				<div class="flex items-center justify-center gap-3 sm:gap-6 text-white/40 text-xs">
 					<div class="flex items-center gap-1 sm:gap-1.5">
 						<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 sm:h-3.5 sm:w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -913,12 +1200,372 @@
 			</div>
 		{/if}
 	</div>
+
+	<!-- Docpack Explorer Modal -->
+	{#if showExplorer}
+		<div class="fixed inset-0 z-50 flex items-center justify-center p-4">
+			<!-- Backdrop -->
+			<div
+				class="absolute inset-0 bg-black/80 backdrop-blur-sm"
+				onclick={closeExplorer}
+				role="button"
+				tabindex="-1"
+				onkeydown={(e) => e.key === 'Escape' && closeExplorer()}
+			></div>
+
+			<!-- Modal -->
+			<div class="relative w-full max-w-5xl h-[85vh] bg-slate-900 border border-white/10 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
+				<!-- Header -->
+				<div class="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-slate-800/50">
+					<div class="flex items-center gap-4">
+						<div class="flex items-center gap-2">
+							<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+							</svg>
+							<h2 class="text-lg font-semibold text-white">Document Explorer</h2>
+						</div>
+						<!-- Breadcrumb -->
+						<div class="flex items-center gap-2 text-sm">
+							<button
+								onclick={backToFiles}
+								class="text-white/50 hover:text-white/80 transition-colors {explorerView === 'files' ? 'text-blue-400' : ''}"
+							>
+								Files
+							</button>
+							{#if selectedFile}
+								<span class="text-white/30">/</span>
+								<button
+									onclick={backToChunks}
+									class="text-white/50 hover:text-white/80 transition-colors truncate max-w-48 {explorerView === 'chunks' ? 'text-blue-400' : ''}"
+								>
+									{selectedFile.file.path}
+								</button>
+							{/if}
+							{#if selectedChunk}
+								<span class="text-white/30">/</span>
+								<span class="text-blue-400">Chunk {selectedChunk.chunk_index + 1}</span>
+							{/if}
+						</div>
+					</div>
+					<button
+						onclick={closeExplorer}
+						aria-label="Close explorer"
+						class="p-2 text-white/40 hover:text-white/80 hover:bg-white/10 rounded-lg transition-colors"
+					>
+						<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+						</svg>
+					</button>
+				</div>
+
+				<!-- Content -->
+				<div class="flex-1 overflow-hidden flex">
+					{#if loadingOverview}
+						<div class="flex-1 flex items-center justify-center">
+							<svg class="h-8 w-8 animate-spin text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+								<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+								<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+							</svg>
+						</div>
+					{:else if explorerView === 'files' && docpackOverview}
+						<!-- Files List View -->
+						<div class="flex-1 flex flex-col">
+							<!-- Search bar -->
+							<div class="p-4 border-b border-white/5">
+								<div class="relative">
+									<svg xmlns="http://www.w3.org/2000/svg" class="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-white/40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+									</svg>
+									<input
+										type="text"
+										bind:value={explorerSearch}
+										placeholder="Filter files..."
+										class="w-full pl-10 pr-4 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-white/40 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+									/>
+								</div>
+							</div>
+
+							<!-- Stats summary -->
+							<div class="px-4 py-3 bg-white/2 border-b border-white/5 flex items-center gap-6 text-xs text-white/50">
+								<span>{docpackOverview.stats.total_files} files</span>
+								<span>{docpackOverview.stats.total_chunks} chunks</span>
+								<span>{docpackOverview.stats.total_vectors} vectors</span>
+								{#if docpackOverview.stats.total_images > 0}
+									<span>{docpackOverview.stats.total_images} images</span>
+								{/if}
+							</div>
+
+							<!-- File list -->
+							<div class="flex-1 overflow-y-auto">
+								{#each filteredFiles as file}
+									<button
+										onclick={() => selectFile(file)}
+										class="w-full flex items-center gap-4 px-4 py-3 hover:bg-white/5 border-b border-white/5 transition-colors text-left group"
+									>
+										<!-- Extension badge -->
+										<span class="shrink-0 px-2 py-0.5 rounded text-xs font-mono {getExtensionColor(file.extension)}">
+											{file.extension || 'file'}
+										</span>
+
+										<!-- File info -->
+										<div class="flex-1 min-w-0">
+											<div class="text-white/80 text-sm truncate group-hover:text-white">
+												{file.path}
+											</div>
+											{#if file.preview}
+												{@const firstLine = file.preview.split('\n').find(line => line.trim().length > 0)?.trim().slice(0, 80)}
+												{#if firstLine}
+													<div class="text-white/40 text-xs truncate mt-0.5 font-mono">
+														{firstLine}{firstLine.length >= 80 ? '...' : ''}
+													</div>
+												{/if}
+											{/if}
+										</div>
+
+										<!-- Metadata -->
+										<div class="shrink-0 text-right">
+											<div class="text-white/50 text-xs">
+												{file.chunk_count} chunks
+											</div>
+											<div class="text-white/30 text-xs">
+												{formatSize(file.size_bytes)}
+											</div>
+										</div>
+
+										<!-- Arrow -->
+										<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-white/20 group-hover:text-white/50 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+										</svg>
+									</button>
+								{/each}
+							</div>
+						</div>
+
+					{:else if explorerView === 'chunks' && selectedFile}
+						<!-- Chunks View -->
+						<div class="flex-1 flex flex-col">
+							{#if loadingFile}
+								<div class="flex-1 flex items-center justify-center">
+									<svg class="h-8 w-8 animate-spin text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+										<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+										<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+									</svg>
+								</div>
+							{:else}
+								<!-- File info header -->
+								<div class="px-4 py-3 bg-white/2 border-b border-white/5">
+									<div class="flex items-center gap-3">
+										<button
+											onclick={backToFiles}
+											class="shrink-0 p-1.5 -ml-1 text-white/40 hover:text-white/80 hover:bg-white/10 rounded-lg transition-colors"
+											aria-label="Back to files"
+										>
+											<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+												<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+											</svg>
+										</button>
+										<span class="px-2 py-0.5 rounded text-xs font-mono {getExtensionColor(selectedFile.file.extension)}">
+											{selectedFile.file.extension || 'file'}
+										</span>
+										<span class="text-white/60 text-sm">{selectedFile.file.path}</span>
+										<span class="text-white/30 text-xs ml-auto">{formatSize(selectedFile.file.size_bytes)}</span>
+									</div>
+								</div>
+
+								<!-- Chunks list -->
+								<div class="flex-1 overflow-y-auto">
+									{#each selectedFile.chunks as chunk, i}
+										{@const isChunkExpanded = expandedChunks.has(chunk.id)}
+										<div class="border-b border-white/5">
+											<!-- Chunk header (always visible, clickable to expand) -->
+											<button
+												onclick={() => toggleChunkExpand(chunk.id)}
+												class="w-full flex items-start gap-3 px-4 py-3 hover:bg-white/5 transition-colors text-left group"
+											>
+												<!-- Chunk index -->
+												<div class="shrink-0">
+													<span class="inline-block px-2 py-1 bg-blue-500/20 text-blue-400 rounded text-xs font-mono">
+														#{i + 1}
+													</span>
+												</div>
+
+												<!-- Chunk preview/header -->
+												<div class="flex-1 min-w-0">
+													<div class="flex items-center gap-2 flex-wrap">
+														<span class="text-white/40 text-xs">{chunk.token_count} tokens</span>
+														<span class="text-white/30 text-xs">•</span>
+														<span class="text-white/30 text-xs">chars {chunk.start_char}-{chunk.end_char}</span>
+														{#if chunk.media_type && chunk.media_type !== 'text'}
+															<span class="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 rounded text-xs">
+																{chunk.media_type}
+															</span>
+														{/if}
+													</div>
+													{#if !isChunkExpanded}
+														{#if chunk.summary}
+															<!-- Show AI summary when available -->
+															<p class="text-white/70 text-sm leading-relaxed mt-1.5 group-hover:text-white/90">
+																{chunk.summary}
+															</p>
+														{:else}
+															<!-- Fallback: show first line or clean preview -->
+															<p class="text-white/50 text-sm leading-relaxed mt-1.5 line-clamp-1 group-hover:text-white/70 font-mono">
+																{chunk.text.split('\n').find(line => line.trim().length > 0)?.trim().slice(0, 100) || chunk.text.slice(0, 100)}...
+															</p>
+														{/if}
+													{/if}
+												</div>
+
+												<!-- Expand indicator -->
+												<div class="shrink-0 text-white/30">
+													<svg class="h-4 w-4 transition-transform {isChunkExpanded ? 'rotate-180' : ''}" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+														<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+													</svg>
+												</div>
+											</button>
+
+											<!-- Expanded content -->
+											{#if isChunkExpanded}
+												<div class="px-4 pb-4 bg-white/2">
+													<!-- Full text with proper wrapping -->
+													<div class="pl-10">
+														<pre class="text-white/80 text-sm leading-relaxed whitespace-pre-wrap break-words font-mono bg-black/20 rounded-lg p-4 max-h-96 overflow-y-auto">{chunk.text}</pre>
+
+														{#if chunk.summary}
+															<div class="mt-3 p-3 bg-blue-500/5 border border-blue-500/10 rounded-lg">
+																<span class="text-blue-400/70 text-xs font-medium">AI Summary</span>
+																<p class="text-white/60 text-sm mt-1 italic">{chunk.summary}</p>
+															</div>
+														{/if}
+
+														<!-- Actions -->
+														<div class="mt-3 flex items-center gap-3">
+															<button
+																onclick={(e) => { e.stopPropagation(); selectChunk(chunk); }}
+																class="text-blue-400/70 hover:text-blue-400 text-xs transition-colors flex items-center gap-1"
+															>
+																<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+																	<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+																	<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+																</svg>
+																Open full view
+															</button>
+														</div>
+													</div>
+												</div>
+											{/if}
+										</div>
+									{/each}
+								</div>
+							{/if}
+						</div>
+
+					{:else if explorerView === 'content' && selectedChunk && selectedFile}
+						<!-- Full Content View -->
+						<div class="flex-1 flex flex-col">
+							<!-- Chunk header -->
+							<div class="px-4 py-3 bg-blue-500/10 border-b border-blue-500/20 flex items-center justify-between">
+								<div class="flex items-center gap-3">
+									<span class="px-2 py-1 bg-blue-500/20 text-blue-400 rounded text-xs font-mono">
+										Chunk #{selectedChunk.chunk_index + 1}
+									</span>
+									<span class="text-white/50 text-xs">
+										{selectedChunk.token_count} tokens • chars {selectedChunk.start_char}-{selectedChunk.end_char}
+									</span>
+								</div>
+								{#if selectedChunk.media_type && selectedChunk.media_type !== 'text'}
+									<span class="px-2 py-1 bg-purple-500/20 text-purple-400 rounded text-xs">
+										{selectedChunk.media_type}
+									</span>
+								{/if}
+							</div>
+
+							<!-- Full text content -->
+							<div class="flex-1 overflow-y-auto p-6">
+								<pre class="text-white/80 text-sm leading-relaxed whitespace-pre-wrap font-mono">{selectedChunk.text}</pre>
+
+								{#if selectedChunk.summary}
+									<div class="mt-6 pt-4 border-t border-white/10">
+										<h4 class="text-white/50 text-xs uppercase tracking-wide mb-2">AI Summary</h4>
+										<p class="text-white/60 text-sm italic">{selectedChunk.summary}</p>
+									</div>
+								{/if}
+							</div>
+
+							<!-- Navigation -->
+							<div class="px-4 py-3 border-t border-white/10 flex items-center justify-between bg-white/2">
+								<button
+									onclick={() => {
+										const prevIdx = selectedChunk!.chunk_index - 1;
+										const prevChunk = selectedFile?.chunks.find(c => c.chunk_index === prevIdx);
+										if (prevChunk) selectChunk(prevChunk);
+									}}
+									disabled={selectedChunk.chunk_index === 0}
+									class="flex items-center gap-2 px-3 py-1.5 text-sm text-white/60 hover:text-white/90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+								>
+									<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+									</svg>
+									Previous chunk
+								</button>
+
+								<span class="text-white/40 text-xs">
+									{selectedChunk.chunk_index + 1} of {selectedFile.chunks.length}
+								</span>
+
+								<button
+									onclick={() => {
+										const nextIdx = selectedChunk!.chunk_index + 1;
+										const nextChunk = selectedFile?.chunks.find(c => c.chunk_index === nextIdx);
+										if (nextChunk) selectChunk(nextChunk);
+									}}
+									disabled={selectedChunk.chunk_index >= selectedFile.chunks.length - 1}
+									class="flex items-center gap-2 px-3 py-1.5 text-sm text-white/60 hover:text-white/90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+								>
+									Next chunk
+									<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+										<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+									</svg>
+								</button>
+							</div>
+						</div>
+					{/if}
+				</div>
+
+				<!-- Footer with metadata -->
+				{#if docpackOverview?.metadata}
+					<div class="px-6 py-3 border-t border-white/10 bg-slate-800/30 flex items-center justify-between text-xs text-white/40">
+						<div class="flex items-center gap-4">
+							{#if docpackOverview.metadata.created_at}
+								<span>Created: {new Date(docpackOverview.metadata.created_at).toLocaleString()}</span>
+							{/if}
+							{#if docpackOverview.metadata.docpack_version}
+								<span>v{docpackOverview.metadata.docpack_version}</span>
+							{/if}
+						</div>
+						<div class="flex items-center gap-2">
+							<svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+							</svg>
+							<span>SQLite-powered semantic search</span>
+						</div>
+					</div>
+				{/if}
+			</div>
+		</div>
+	{/if}
 </main>
 
 <style>
 	.line-clamp-2 {
 		display: -webkit-box;
 		-webkit-line-clamp: 2;
+		-webkit-box-orient: vertical;
+		overflow: hidden;
+	}
+	.line-clamp-3 {
+		display: -webkit-box;
+		-webkit-line-clamp: 3;
 		-webkit-box-orient: vertical;
 		overflow: hidden;
 	}
