@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { SignedIn, SignedOut, SignInButton, UserButton } from 'svelte-clerk';
 
 	// Types
 	interface Citation {
@@ -796,6 +797,20 @@
 </script>
 
 <main class="min-h-screen bg-slate-900 flex flex-col items-center px-3 py-6 sm:px-4 sm:py-12">
+	<!-- Auth Header -->
+	<div class="w-full max-w-3xl flex justify-end mb-4">
+		<SignedOut>
+			<SignInButton mode="modal">
+				<button class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors">
+					Sign In
+				</button>
+			</SignInButton>
+		</SignedOut>
+		<SignedIn>
+			<UserButton />
+		</SignedIn>
+	</div>
+
 	<div class="w-full max-w-3xl flex flex-col items-center gap-4 sm:gap-6">
 		<!-- Logo/Title -->
 		<h1 class="text-3xl sm:text-4xl font-bold text-white tracking-tight">
