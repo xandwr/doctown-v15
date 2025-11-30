@@ -372,6 +372,11 @@ def cmd_web(args: argparse.Namespace) -> int:
     """Handle web command - start the web server."""
     from pathlib import Path
 
+    from dotenv import load_dotenv
+
+    # Load .env file from current directory (for CLERK_JWKS_URL, etc.)
+    load_dotenv()
+
     from docpack.web import run_server
 
     # Set up runtime config
