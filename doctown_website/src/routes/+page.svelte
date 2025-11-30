@@ -906,7 +906,6 @@
 						oninput={autoResizeTextarea}
 						placeholder="Ask anything about your documents..."
 						disabled={isAsking}
-						autofocus
 						rows="1"
 						class="w-full pl-10 sm:pl-14 pr-12 sm:pr-16 py-3.5 sm:py-5 text-base sm:text-lg bg-white/10 backdrop-blur-sm border border-white/20 rounded-xl sm:rounded-2xl text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all resize-none overflow-hidden"
 						style="min-height: 52px; max-height: 200px;"
@@ -1114,7 +1113,7 @@
 				{#if stage === 'ready'}
 					<button
 						onclick={openExplorer}
-						class="group flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-600/20 to-purple-600/20 hover:from-blue-600/30 hover:to-purple-600/30 border border-white/10 hover:border-white/20 rounded-xl transition-all"
+						class="group flex items-center gap-2 px-4 py-2 bg-linear-to-r from-blue-600/20 to-purple-600/20 hover:from-blue-600/30 hover:to-purple-600/30 border border-white/10 hover:border-white/20 rounded-xl transition-all"
 					>
 						<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
@@ -1429,7 +1428,7 @@
 												<div class="px-4 pb-4 bg-white/2">
 													<!-- Full text with proper wrapping -->
 													<div class="pl-10">
-														<pre class="text-white/80 text-sm leading-relaxed whitespace-pre-wrap break-words font-mono bg-black/20 rounded-lg p-4 max-h-96 overflow-y-auto">{chunk.text}</pre>
+														<pre class="text-white/80 text-sm leading-relaxed whitespace-pre-wrap wrap-break-word font-mono bg-black/20 rounded-lg p-4 max-h-96 overflow-y-auto">{chunk.text}</pre>
 
 														{#if chunk.summary}
 															<div class="mt-3 p-3 bg-blue-500/5 border border-blue-500/10 rounded-lg">
@@ -1559,13 +1558,13 @@
 <style>
 	.line-clamp-2 {
 		display: -webkit-box;
-		-webkit-line-clamp: 2;
+		line-clamp: 2;
 		-webkit-box-orient: vertical;
 		overflow: hidden;
 	}
 	.line-clamp-3 {
 		display: -webkit-box;
-		-webkit-line-clamp: 3;
+		line-clamp: 3;
 		-webkit-box-orient: vertical;
 		overflow: hidden;
 	}
