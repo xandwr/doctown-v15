@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { dev } from '$app/environment';
 	import { SignedIn, SignedOut, SignInButton, UserButton, useClerkContext } from 'svelte-clerk';
 
 	// Get auth context for API calls
@@ -1048,38 +1049,40 @@
 						</div>
 					{/if}
 
-					<!-- Advanced: Path input (collapsed by default) -->
-					<div class="pt-2">
-						<button
-							onclick={() => showAdvanced = !showAdvanced}
-							class="text-white/30 hover:text-white/50 text-xs flex items-center gap-1 transition-colors mx-auto"
-						>
-							<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 transition-transform {showAdvanced ? 'rotate-90' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-							</svg>
-							Advanced: Load from server path
-						</button>
+					<!-- Advanced: Path input (collapsed by default) - dev only -->
+					{#if dev}
+						<div class="pt-2">
+							<button
+								onclick={() => showAdvanced = !showAdvanced}
+								class="text-white/30 hover:text-white/50 text-xs flex items-center gap-1 transition-colors mx-auto"
+							>
+								<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 transition-transform {showAdvanced ? 'rotate-90' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+								</svg>
+								Advanced: Load from server path
+							</button>
 
-						{#if showAdvanced}
-							<div class="mt-3 flex gap-3">
-								<input
-									type="text"
-									bind:value={directoryPath}
-									onkeydown={handleKeydown}
-									placeholder="/path/to/your/project"
-									disabled={isProcessing || stagedFiles.length > 0}
-									class="flex-1 px-4 py-3 text-sm bg-white/10 backdrop-blur-sm border border-white/20 rounded-xl text-white placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all disabled:opacity-50"
-								/>
-								<button
-									onclick={handleProcess}
-									disabled={!directoryPath.trim() || isProcessing || stagedFiles.length > 0}
-									class="px-5 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-xl transition-colors"
-								>
-									Load
-								</button>
-							</div>
-						{/if}
-					</div>
+							{#if showAdvanced}
+								<div class="mt-3 flex gap-3">
+									<input
+										type="text"
+										bind:value={directoryPath}
+										onkeydown={handleKeydown}
+										placeholder="/path/to/your/project"
+										disabled={isProcessing || stagedFiles.length > 0}
+										class="flex-1 px-4 py-3 text-sm bg-white/10 backdrop-blur-sm border border-white/20 rounded-xl text-white placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all disabled:opacity-50"
+									/>
+									<button
+										onclick={handleProcess}
+										disabled={!directoryPath.trim() || isProcessing || stagedFiles.length > 0}
+										class="px-5 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-xl transition-colors"
+									>
+										Load
+									</button>
+								</div>
+							{/if}
+						</div>
+					{/if}
 				</SignedIn>
 			</div>
 		{/if}
