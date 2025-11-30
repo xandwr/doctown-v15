@@ -1,6 +1,32 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { SignedIn, SignedOut, SignInButton, UserButton } from 'svelte-clerk';
+	import { SignedIn, SignedOut, SignInButton, UserButton, useClerkContext } from 'svelte-clerk';
+
+	// Get auth context for API calls
+	const clerkCtx = useClerkContext();
+
+	// Helper to get auth token for API requests
+	async function getAuthToken(): Promise<string | null> {
+		try {
+			const session = clerkCtx.session;
+			if (session) {
+				return await session.getToken();
+			}
+		} catch (e) {
+			console.warn('Failed to get auth token:', e);
+		}
+		return null;
+	}
+
+	// Helper to make authenticated API calls
+	async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
+		const token = await getAuthToken();
+		const headers = new Headers(options.headers);
+		if (token) {
+			headers.set('Authorization', `Bearer ${token}`);
+		}
+		return fetch(url, { ...options, headers });
+	}
 
 	// Types
 	interface Citation {
@@ -271,7 +297,7 @@
 				return;
 			}
 
-			const response = await fetch('/api/process', {
+			const response = await authFetch('/api/process', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify(body)
@@ -289,7 +315,7 @@
 
 	async function handleUnload() {
 		try {
-			const response = await fetch('/api/unload', {
+			const response = await authFetch('/api/unload', {
 				method: 'POST'
 			});
 
@@ -465,7 +491,7 @@
 			const baseUrl = window.location.origin;
 			log(`POST to ${baseUrl}/api/upload`);
 
-			const response = await fetch(`${baseUrl}/api/upload`, {
+			const response = await authFetch(`${baseUrl}/api/upload`, {
 				method: 'POST',
 				body: formData
 			});
@@ -491,7 +517,7 @@
 
 	async function removeFile(fileName: string) {
 		try {
-			const response = await fetch(`/api/staged/${encodeURIComponent(fileName)}`, {
+			const response = await authFetch(`/api/staged/${encodeURIComponent(fileName)}`, {
 				method: 'DELETE'
 			});
 
@@ -506,7 +532,7 @@
 
 	async function clearAllFiles() {
 		try {
-			const response = await fetch('/api/staged', {
+			const response = await authFetch('/api/staged', {
 				method: 'DELETE'
 			});
 
@@ -573,7 +599,7 @@
 		}, 50); // Update every 50ms for smooth display
 
 		try {
-			const response = await fetch('/api/ask', {
+			const response = await authFetch('/api/ask', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ query: searchQuery.trim() })
@@ -830,28 +856,68 @@
 		<!-- File Upload UI (show when idle) -->
 		{#if stage === 'idle' || stage === 'error'}
 			<div class="w-full mt-2 sm:mt-4 space-y-3 sm:space-y-4">
-				<!-- Drop zone -->
-				<div
-					class="relative border-2 border-dashed rounded-xl sm:rounded-2xl p-6 sm:p-8 text-center transition-all cursor-pointer
-						{isDragOver ? 'border-blue-400 bg-blue-500/10' : 'border-white/20 hover:border-white/40 hover:bg-white/5'}"
-					ondrop={handleDrop}
-					ondragover={handleDragOver}
-					ondragleave={handleDragLeave}
-					role="button"
-					tabindex="0"
-					onkeydown={(e) => e.key === 'Enter' && document.getElementById('file-input')?.click()}
-					onclick={() => document.getElementById('file-input')?.click()}
-				>
-					{#if isUploading}
-						<div class="flex flex-col items-center gap-3">
-							<svg class="h-8 w-8 animate-spin text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-								<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-								<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-							</svg>
-							<span class="text-white/60">Uploading files...</span>
-						</div>
-					{:else}
-						<div class="flex flex-col items-center gap-2 sm:gap-3">
+				<!-- Drop zone - Gated for authenticated users -->
+				<SignedIn>
+					<div
+						class="relative border-2 border-dashed rounded-xl sm:rounded-2xl p-6 sm:p-8 text-center transition-all cursor-pointer
+							{isDragOver ? 'border-blue-400 bg-blue-500/10' : 'border-white/20 hover:border-white/40 hover:bg-white/5'}"
+						ondrop={handleDrop}
+						ondragover={handleDragOver}
+						ondragleave={handleDragLeave}
+						role="button"
+						tabindex="0"
+						onkeydown={(e) => e.key === 'Enter' && document.getElementById('file-input')?.click()}
+						onclick={() => document.getElementById('file-input')?.click()}
+					>
+						{#if isUploading}
+							<div class="flex flex-col items-center gap-3">
+								<svg class="h-8 w-8 animate-spin text-blue-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+									<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+									<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+								</svg>
+								<span class="text-white/60">Uploading files...</span>
+							</div>
+						{:else}
+							<div class="flex flex-col items-center gap-2 sm:gap-3">
+								<svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 sm:h-10 sm:w-10 text-white/40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+								</svg>
+								<div>
+									<p class="text-white/70 text-base sm:text-lg">Drop files here or tap to browse</p>
+									<p class="text-white/40 text-xs sm:text-sm mt-1">Upload documents, code, or any text files</p>
+								</div>
+							</div>
+						{/if}
+
+						<!-- Hidden file inputs -->
+						<input
+							id="file-input"
+							type="file"
+							multiple
+							class="hidden"
+							onchange={handleFileInput}
+						/>
+					</div>
+
+					<!-- Folder upload button (desktop browsers) -->
+					<div class="flex gap-3 justify-center">
+						<label class="px-4 py-2 bg-white/10 hover:bg-white/15 rounded-lg text-white/70 text-sm cursor-pointer transition-colors">
+							<input
+								type="file"
+								multiple
+								webkitdirectory
+								class="hidden"
+								onchange={handleFileInput}
+							/>
+							Upload Folder
+						</label>
+					</div>
+				</SignedIn>
+
+				<!-- Disabled upload zone for anonymous users -->
+				<SignedOut>
+					<div class="relative border-2 border-dashed rounded-xl sm:rounded-2xl p-6 sm:p-8 text-center border-white/10 bg-white/2">
+						<div class="flex flex-col items-center gap-2 sm:gap-3 opacity-40">
 							<svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 sm:h-10 sm:w-10 text-white/40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
 							</svg>
@@ -860,159 +926,161 @@
 								<p class="text-white/40 text-xs sm:text-sm mt-1">Upload documents, code, or any text files</p>
 							</div>
 						</div>
-					{/if}
 
-					<!-- Hidden file inputs -->
-					<input
-						id="file-input"
-						type="file"
-						multiple
-						class="hidden"
-						onchange={handleFileInput}
-					/>
-				</div>
+						<!-- Login overlay -->
+						<div class="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 backdrop-blur-sm rounded-xl sm:rounded-2xl">
+							<div class="flex items-center gap-2 text-white/70 mb-3">
+								<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+								</svg>
+								<span class="text-sm font-medium">Sign in to upload files</span>
+							</div>
+							<SignInButton mode="modal">
+								<button class="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-xl transition-colors shadow-lg shadow-blue-600/20">
+									Sign In to Get Started
+								</button>
+							</SignInButton>
+							<p class="text-white/40 text-xs mt-3">Free tier includes limited processing</p>
+						</div>
+					</div>
 
-				<!-- Folder upload button (desktop browsers) -->
-				<div class="flex gap-3 justify-center">
-					<label class="px-4 py-2 bg-white/10 hover:bg-white/15 rounded-lg text-white/70 text-sm cursor-pointer transition-colors">
-						<input
-							type="file"
-							multiple
-							webkitdirectory
-							class="hidden"
-							onchange={handleFileInput}
-						/>
-						Upload Folder
-					</label>
-				</div>
+					<!-- Disabled folder upload button -->
+					<div class="flex gap-3 justify-center">
+						<span class="px-4 py-2 bg-white/5 rounded-lg text-white/30 text-sm cursor-not-allowed">
+							Upload Folder
+						</span>
+					</div>
+				</SignedOut>
 
-				<!-- Staged files list -->
-				{#if stagedFiles.length > 0}
-					<div class="bg-white/5 rounded-xl p-3 sm:p-4 space-y-2">
-						<div class="flex items-center justify-between mb-2 sm:mb-3">
-							<span class="text-white/60 text-xs sm:text-sm">
-								{stagedFiles.length} file{stagedFiles.length !== 1 ? 's' : ''} staged ({formatSize(stagedTotalSize)})
-							</span>
+				<!-- Staged files list (only for authenticated users) -->
+				<SignedIn>
+					{#if stagedFiles.length > 0}
+						<div class="bg-white/5 rounded-xl p-3 sm:p-4 space-y-2">
+							<div class="flex items-center justify-between mb-2 sm:mb-3">
+								<span class="text-white/60 text-xs sm:text-sm">
+									{stagedFiles.length} file{stagedFiles.length !== 1 ? 's' : ''} staged ({formatSize(stagedTotalSize)})
+								</span>
+								<button
+									onclick={clearAllFiles}
+									class="text-red-400/70 hover:text-red-400 text-xs transition-colors"
+								>
+									Clear all
+								</button>
+							</div>
+
+							<div class="max-h-40 sm:max-h-48 overflow-y-auto space-y-1">
+								{#each stagedFiles as file}
+									<div class="flex items-center gap-2 sm:gap-3 py-1.5 px-2 rounded-lg hover:bg-white/5 group">
+										<!-- File icon -->
+										<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-white/40 shrink-0 hidden sm:block" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+											{#if getFileIcon(file.name) === 'code'}
+												<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+											{:else if getFileIcon(file.name) === 'doc'}
+												<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+											{:else if getFileIcon(file.name) === 'data'}
+												<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+											{:else}
+												<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+											{/if}
+										</svg>
+
+										<!-- File name -->
+										<span class="flex-1 text-white/70 text-xs sm:text-sm truncate" title={file.name}>
+											{file.name}
+										</span>
+
+										<!-- File size -->
+										<span class="text-white/30 text-xs shrink-0 hidden sm:inline">
+											{formatSize(file.size)}
+										</span>
+
+										<!-- Remove button -->
+										<button
+											onclick={() => removeFile(file.name)}
+											class="opacity-0 group-hover:opacity-100 text-white/30 hover:text-red-400 transition-all p-1"
+											title="Remove file"
+										>
+											<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+												<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+											</svg>
+										</button>
+									</div>
+								{/each}
+							</div>
+
+							<!-- Process button -->
 							<button
-								onclick={clearAllFiles}
-								class="text-red-400/70 hover:text-red-400 text-xs transition-colors"
+								onclick={handleProcess}
+								disabled={isProcessing || isUploading}
+								class="w-full mt-2 sm:mt-3 px-4 sm:px-6 py-2.5 sm:py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 disabled:cursor-not-allowed text-white text-sm sm:text-base font-medium rounded-xl transition-colors"
 							>
-								Clear all
+								Process {stagedFiles.length} file{stagedFiles.length !== 1 ? 's' : ''}
 							</button>
 						</div>
+					{/if}
 
-						<div class="max-h-40 sm:max-h-48 overflow-y-auto space-y-1">
-							{#each stagedFiles as file}
-								<div class="flex items-center gap-2 sm:gap-3 py-1.5 px-2 rounded-lg hover:bg-white/5 group">
-									<!-- File icon -->
-									<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-white/40 shrink-0 hidden sm:block" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-										{#if getFileIcon(file.name) === 'code'}
-											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
-										{:else if getFileIcon(file.name) === 'doc'}
-											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-										{:else if getFileIcon(file.name) === 'data'}
-											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
-										{:else}
-											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+					<!-- Excluded directories notice -->
+					{#if excludedDirs.size > 0}
+						{@const totalExcluded = Array.from(excludedDirs.values()).reduce((sum, e) => sum + e.count, 0)}
+						{@const totalSize = Array.from(excludedDirs.values()).reduce((sum, e) => sum + e.size, 0)}
+						<div class="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-3 sm:p-4">
+							<div class="flex items-start gap-2">
+								<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-yellow-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+								</svg>
+								<div class="flex-1 min-w-0">
+									<p class="text-yellow-200/90 text-sm font-medium">
+										Excluded {totalExcluded} files ({formatSize(totalSize)})
+									</p>
+									<div class="mt-2 flex flex-wrap gap-1.5">
+										{#each [...excludedDirs.entries()].sort((a, b) => b[1].size - a[1].size).slice(0, 6) as [dir, info]}
+											<span class="inline-flex items-center gap-1 px-2 py-0.5 bg-yellow-500/10 rounded text-xs text-yellow-300/70" title="{info.count} files, {formatSize(info.size)} - {info.reason}">
+												<span class="truncate max-w-24">{dir}</span>
+												<span class="text-yellow-400/50">({formatSize(info.size)})</span>
+											</span>
+										{/each}
+										{#if excludedDirs.size > 6}
+											<span class="text-yellow-400/50 text-xs">+{excludedDirs.size - 6} more</span>
 										{/if}
-									</svg>
-
-									<!-- File name -->
-									<span class="flex-1 text-white/70 text-xs sm:text-sm truncate" title={file.name}>
-										{file.name}
-									</span>
-
-									<!-- File size -->
-									<span class="text-white/30 text-xs shrink-0 hidden sm:inline">
-										{formatSize(file.size)}
-									</span>
-
-									<!-- Remove button -->
-									<button
-										onclick={() => removeFile(file.name)}
-										class="opacity-0 group-hover:opacity-100 text-white/30 hover:text-red-400 transition-all p-1"
-										title="Remove file"
-									>
-										<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-										</svg>
-									</button>
-								</div>
-							{/each}
-						</div>
-
-						<!-- Process button -->
-						<button
-							onclick={handleProcess}
-							disabled={isProcessing || isUploading}
-							class="w-full mt-2 sm:mt-3 px-4 sm:px-6 py-2.5 sm:py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 disabled:cursor-not-allowed text-white text-sm sm:text-base font-medium rounded-xl transition-colors"
-						>
-							Process {stagedFiles.length} file{stagedFiles.length !== 1 ? 's' : ''}
-						</button>
-					</div>
-				{/if}
-
-				<!-- Excluded directories notice -->
-				{#if excludedDirs.size > 0}
-					{@const totalExcluded = Array.from(excludedDirs.values()).reduce((sum, e) => sum + e.count, 0)}
-					{@const totalSize = Array.from(excludedDirs.values()).reduce((sum, e) => sum + e.size, 0)}
-					<div class="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-3 sm:p-4">
-						<div class="flex items-start gap-2">
-							<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-yellow-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-							</svg>
-							<div class="flex-1 min-w-0">
-								<p class="text-yellow-200/90 text-sm font-medium">
-									Excluded {totalExcluded} files ({formatSize(totalSize)})
-								</p>
-								<div class="mt-2 flex flex-wrap gap-1.5">
-									{#each [...excludedDirs.entries()].sort((a, b) => b[1].size - a[1].size).slice(0, 6) as [dir, info]}
-										<span class="inline-flex items-center gap-1 px-2 py-0.5 bg-yellow-500/10 rounded text-xs text-yellow-300/70" title="{info.count} files, {formatSize(info.size)} - {info.reason}">
-											<span class="truncate max-w-24">{dir}</span>
-											<span class="text-yellow-400/50">({formatSize(info.size)})</span>
-										</span>
-									{/each}
-									{#if excludedDirs.size > 6}
-										<span class="text-yellow-400/50 text-xs">+{excludedDirs.size - 6} more</span>
-									{/if}
+									</div>
 								</div>
 							</div>
 						</div>
-					</div>
-				{/if}
-
-				<!-- Advanced: Path input (collapsed by default) -->
-				<div class="pt-2">
-					<button
-						onclick={() => showAdvanced = !showAdvanced}
-						class="text-white/30 hover:text-white/50 text-xs flex items-center gap-1 transition-colors mx-auto"
-					>
-						<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 transition-transform {showAdvanced ? 'rotate-90' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-						</svg>
-						Advanced: Load from server path
-					</button>
-
-					{#if showAdvanced}
-						<div class="mt-3 flex gap-3">
-							<input
-								type="text"
-								bind:value={directoryPath}
-								onkeydown={handleKeydown}
-								placeholder="/path/to/your/project"
-								disabled={isProcessing || stagedFiles.length > 0}
-								class="flex-1 px-4 py-3 text-sm bg-white/10 backdrop-blur-sm border border-white/20 rounded-xl text-white placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all disabled:opacity-50"
-							/>
-							<button
-								onclick={handleProcess}
-								disabled={!directoryPath.trim() || isProcessing || stagedFiles.length > 0}
-								class="px-5 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-xl transition-colors"
-							>
-								Load
-							</button>
-						</div>
 					{/if}
-				</div>
+
+					<!-- Advanced: Path input (collapsed by default) -->
+					<div class="pt-2">
+						<button
+							onclick={() => showAdvanced = !showAdvanced}
+							class="text-white/30 hover:text-white/50 text-xs flex items-center gap-1 transition-colors mx-auto"
+						>
+							<svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 transition-transform {showAdvanced ? 'rotate-90' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+							</svg>
+							Advanced: Load from server path
+						</button>
+
+						{#if showAdvanced}
+							<div class="mt-3 flex gap-3">
+								<input
+									type="text"
+									bind:value={directoryPath}
+									onkeydown={handleKeydown}
+									placeholder="/path/to/your/project"
+									disabled={isProcessing || stagedFiles.length > 0}
+									class="flex-1 px-4 py-3 text-sm bg-white/10 backdrop-blur-sm border border-white/20 rounded-xl text-white placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all disabled:opacity-50"
+								/>
+								<button
+									onclick={handleProcess}
+									disabled={!directoryPath.trim() || isProcessing || stagedFiles.length > 0}
+									class="px-5 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-xl transition-colors"
+								>
+									Load
+								</button>
+							</div>
+						{/if}
+					</div>
+				</SignedIn>
 			</div>
 		{/if}
 
@@ -1354,8 +1422,107 @@
 
 		<!-- Empty state hint -->
 		{#if stage === 'idle' && stagedFiles.length === 0}
-			<div class="text-center text-white/40 mt-2">
-				<p class="text-sm">Upload files to create a searchable knowledge base.</p>
+			<SignedIn>
+				<div class="text-center text-white/40 mt-2">
+					<p class="text-sm">Upload files to create a searchable knowledge base.</p>
+				</div>
+			</SignedIn>
+			<SignedOut>
+				<div class="text-center text-white/40 mt-4 space-y-2">
+					<p class="text-sm">Sign in to upload your own documents and create searchable knowledge bases.</p>
+					<p class="text-xs text-white/30">Or try exploring a sample docpack below</p>
+				</div>
+			</SignedOut>
+		{/if}
+
+		<!-- Sample Docpacks Section (shown in idle state) -->
+		{#if stage === 'idle'}
+			<div class="w-full mt-6 sm:mt-8">
+				<div class="flex items-center gap-2 mb-4">
+					<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+					</svg>
+					<h2 class="text-white/70 text-sm font-medium">Sample Docpacks</h2>
+					<span class="text-white/30 text-xs">(free to explore)</span>
+				</div>
+
+				<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+					<!-- Rust Docs Sample -->
+					<button
+						class="group p-4 bg-white/5 hover:bg-white/8 border border-white/10 hover:border-white/20 rounded-xl text-left transition-all"
+						onclick={() => {/* TODO: Load sample docpack */}}
+						disabled
+					>
+						<div class="flex items-start gap-3">
+							<div class="p-2 bg-orange-500/20 rounded-lg">
+								<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+								</svg>
+							</div>
+							<div class="flex-1 min-w-0">
+								<h3 class="text-white/80 text-sm font-medium group-hover:text-white">Rust std Library</h3>
+								<p class="text-white/40 text-xs mt-1 line-clamp-2">Core Rust documentation - explore the standard library</p>
+								<div class="flex items-center gap-2 mt-2 text-xs text-white/30">
+									<span>1.2k files</span>
+									<span class="text-white/20">|</span>
+									<span>Coming soon</span>
+								</div>
+							</div>
+						</div>
+					</button>
+
+					<!-- Python Tutorial Sample -->
+					<button
+						class="group p-4 bg-white/5 hover:bg-white/8 border border-white/10 hover:border-white/20 rounded-xl text-left transition-all"
+						onclick={() => {/* TODO: Load sample docpack */}}
+						disabled
+					>
+						<div class="flex items-start gap-3">
+							<div class="p-2 bg-blue-500/20 rounded-lg">
+								<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+								</svg>
+							</div>
+							<div class="flex-1 min-w-0">
+								<h3 class="text-white/80 text-sm font-medium group-hover:text-white">Python Tutorial</h3>
+								<p class="text-white/40 text-xs mt-1 line-clamp-2">Official Python 3.12 tutorial documentation</p>
+								<div class="flex items-center gap-2 mt-2 text-xs text-white/30">
+									<span>156 files</span>
+									<span class="text-white/20">|</span>
+									<span>Coming soon</span>
+								</div>
+							</div>
+						</div>
+					</button>
+
+					<!-- Sample Codebase -->
+					<button
+						class="group p-4 bg-white/5 hover:bg-white/8 border border-white/10 hover:border-white/20 rounded-xl text-left transition-all"
+						onclick={() => {/* TODO: Load sample docpack */}}
+						disabled
+					>
+						<div class="flex items-start gap-3">
+							<div class="p-2 bg-green-500/20 rounded-lg">
+								<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+									<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+								</svg>
+							</div>
+							<div class="flex-1 min-w-0">
+								<h3 class="text-white/80 text-sm font-medium group-hover:text-white">Doctown Source</h3>
+								<p class="text-white/40 text-xs mt-1 line-clamp-2">This project's source code - explore how docpack works</p>
+								<div class="flex items-center gap-2 mt-2 text-xs text-white/30">
+									<span>48 files</span>
+									<span class="text-white/20">|</span>
+									<span>Coming soon</span>
+								</div>
+							</div>
+						</div>
+					</button>
+				</div>
+
+				<p class="text-center text-white/20 text-xs mt-4">
+					Sample docpacks are pre-indexed and free to explore. No compute costs.
+				</p>
 			</div>
 		{/if}
 

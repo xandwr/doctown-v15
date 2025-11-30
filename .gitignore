@@ -11,3 +11,6 @@ wheels/
 .claude
 *.docpack
 **/*.docpack
+
+**/*.env
+*.env

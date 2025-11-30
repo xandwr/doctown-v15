@@ -23,11 +23,54 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException, UploadFile, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+# Clerk authentication (optional - disabled if no CLERK_JWKS_URL env var)
+import os
+try:
+    from fastapi_clerk_auth import ClerkConfig, ClerkHTTPBearer
+    CLERK_JWKS_URL = os.environ.get("CLERK_JWKS_URL")
+    if CLERK_JWKS_URL:
+        clerk_config = ClerkConfig(jwks_url=CLERK_JWKS_URL)
+        clerk_auth = ClerkHTTPBearer(config=clerk_config, auto_error=False)
+        AUTH_ENABLED = True
+        print(f"Clerk auth enabled with JWKS URL: {CLERK_JWKS_URL}")
+    else:
+        clerk_auth = None
+        AUTH_ENABLED = False
+        print("Clerk auth disabled (no CLERK_JWKS_URL env var)")
+except ImportError:
+    clerk_auth = None
+    AUTH_ENABLED = False
+    print("Clerk auth disabled (fastapi-clerk-auth not installed)")
+
+
+def require_auth(credentials=Depends(clerk_auth) if clerk_auth else None):
+    """
+    Dependency that requires authentication.
+
+    If AUTH_ENABLED is True, requires a valid Clerk JWT token.
+    If AUTH_ENABLED is False, allows all requests (for local development).
+    """
+    if not AUTH_ENABLED:
+        return None  # Auth disabled, allow request
+
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    return credentials
+
+
+def optional_auth(credentials=Depends(clerk_auth) if clerk_auth else None):
+    """
+    Dependency that checks auth but doesn't require it.
+    Returns credentials if present, None otherwise.
+    """
+    return credentials
 
 
 # =============================================================================
@@ -606,7 +649,7 @@ async def get_status():
 
 
 @app.post("/api/upload", response_model=StagedFilesResponse)
-async def upload_files(files: list[UploadFile]):
+async def upload_files(files: list[UploadFile], auth=Depends(require_auth)):
     """
     Upload files to staging area for processing.
 
@@ -671,7 +714,7 @@ async def get_staged_files():
 
 
 @app.delete("/api/staged/{file_path:path}")
-async def remove_staged_file(file_path: str):
+async def remove_staged_file(file_path: str, auth=Depends(require_auth)):
     """Remove a single file from staging."""
     if file_path not in state.staged_files:
         raise HTTPException(status_code=404, detail=f"File not staged: {file_path}")
@@ -698,14 +741,14 @@ async def remove_staged_file(file_path: str):
 
 
 @app.delete("/api/staged")
-async def clear_staged_files():
+async def clear_staged_files(auth=Depends(require_auth)):
     """Clear all staged files."""
     state.clear_staging()
     return {"status": "cleared"}
 
 
 @app.post("/api/unload")
-async def unload_docpack():
+async def unload_docpack(auth=Depends(require_auth)):
     """Unload the current docpack and reset to idle state."""
     if state.stage not in ("ready", "error"):
         raise HTTPException(
@@ -817,8 +860,8 @@ async def sse_events():
 
 
 @app.post("/api/process")
-async def process_directory(request: ProcessRequest):
-    """Start processing a directory or staged files."""
+async def process_directory(request: ProcessRequest, auth=Depends(require_auth)):
+    """Start processing a directory or staged files. Requires authentication."""
     if state.stage not in ("idle", "ready", "error"):
         raise HTTPException(status_code=409, detail="Processing already in progress")
 
@@ -865,8 +908,8 @@ def _search_sync(docpack_path: Path, query: str, k: int):
 
 
 @app.post("/api/search", response_model=SearchResponse)
-async def search(request: SearchRequest):
-    """Semantic search against the loaded docpack."""
+async def search(request: SearchRequest, auth=Depends(require_auth)):
+    """Semantic search against the loaded docpack. Requires authentication."""
     if state.stage != "ready" or state.docpack_path is None:
         raise HTTPException(status_code=400, detail="No docpack loaded. Process a directory first.")
 
@@ -909,9 +952,9 @@ def _ask_sync(docpack_path: Path, query: str):
 
 
 @app.post("/api/ask", response_model=AskResponse)
-async def ask(request: AskRequest):
+async def ask(request: AskRequest, auth=Depends(require_auth)):
     """
-    Ask a question and get a citation-backed answer.
+    Ask a question and get a citation-backed answer. Requires authentication.
 
     Returns a concise, accurate answer with citations to source material.
     Only states facts directly supported by the documents.
