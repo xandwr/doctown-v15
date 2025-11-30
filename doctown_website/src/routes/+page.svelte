@@ -302,12 +302,127 @@
 				finalPipelineTime = null;
 				timing = null;
 				stats = null;
+				excludedDirs = new Map();
 				// SSE will update stage to 'idle'
 			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Network error';
 		}
 	}
+
+	// Directories to exclude from uploads (matches docpack/ingest/sources.py IGNORE_DIRS)
+	const IGNORE_DIRS = new Set([
+		'.git', '.svn', '.hg', '.bzr',
+		'__pycache__', 'node_modules',
+		'.tox', '.nox', '.mypy_cache', '.pytest_cache', '.ruff_cache',
+		'.coverage', 'htmlcov',
+		'dist', 'build', '.next', '.nuxt', '.output',
+		'.venv', 'venv', '.env', 'env',
+		'target',  // Rust/Cargo
+		'.gradle', '.idea', '.vscode',
+		'vendor',  // Go, PHP
+		'Pods',    // iOS
+	]);
+
+	// File patterns to exclude
+	const IGNORE_FILES = new Set(['.DS_Store', 'Thumbs.db', '.gitignore', '.gitattributes']);
+	const IGNORE_EXTENSIONS = new Set(['.pyc', '.pyo', '.so', '.dylib', '.dll', '.exe', '.o', '.a', '.lib']);
+
+	// Size threshold for auto-excluding dense directories (50MB)
+	const DENSE_DIR_THRESHOLD = 50 * 1024 * 1024;
+
+	interface FilterResult {
+		files: File[];
+		excluded: Map<string, { count: number; size: number; reason: string }>;
+	}
+
+	function filterFiles(files: FileList | File[]): FilterResult {
+		const filtered: File[] = [];
+		const excluded = new Map<string, { count: number; size: number; reason: string }>();
+		const dirSizes = new Map<string, number>();
+
+		// First pass: calculate directory sizes
+		for (let i = 0; i < files.length; i++) {
+			const file = files[i] as File & { webkitRelativePath?: string };
+			const path = file.webkitRelativePath || file.name;
+			const parts = path.split('/');
+
+			// Accumulate size for each directory level
+			for (let j = 1; j < parts.length; j++) {
+				const dirPath = parts.slice(0, j).join('/');
+				dirSizes.set(dirPath, (dirSizes.get(dirPath) || 0) + file.size);
+			}
+		}
+
+		// Find dense directories (over threshold)
+		const denseDirs = new Set<string>();
+		for (const [dir, size] of dirSizes) {
+			// Only flag as dense if it's a single component (top-level) or immediate child
+			const depth = dir.split('/').length;
+			if (depth <= 2 && size > DENSE_DIR_THRESHOLD) {
+				// Check if this isn't already covered by IGNORE_DIRS
+				const dirName = dir.split('/').pop() || '';
+				if (!IGNORE_DIRS.has(dirName)) {
+					denseDirs.add(dir);
+				}
+			}
+		}
+
+		// Second pass: filter files
+		for (let i = 0; i < files.length; i++) {
+			const file = files[i] as File & { webkitRelativePath?: string };
+			const path = file.webkitRelativePath || file.name;
+			const parts = path.split('/');
+			const fileName = parts[parts.length - 1];
+			const ext = fileName.includes('.') ? '.' + fileName.split('.').pop()?.toLowerCase() : '';
+
+			// Check if file is in an ignored directory
+			let excludeReason: string | null = null;
+			let excludeDir: string | null = null;
+
+			for (let j = 0; j < parts.length - 1; j++) {
+				const dirName = parts[j];
+				const dirPath = parts.slice(0, j + 1).join('/');
+
+				if (IGNORE_DIRS.has(dirName)) {
+					excludeReason = 'ignored directory';
+					excludeDir = dirPath;
+					break;
+				}
+
+				if (denseDirs.has(dirPath)) {
+					excludeReason = 'large directory';
+					excludeDir = dirPath;
+					break;
+				}
+			}
+
+			// Check file-level ignores
+			if (!excludeReason) {
+				if (IGNORE_FILES.has(fileName)) {
+					excludeReason = 'ignored file';
+					excludeDir = fileName;
+				} else if (IGNORE_EXTENSIONS.has(ext)) {
+					excludeReason = 'binary/compiled';
+					excludeDir = `*${ext}`;
+				}
+			}
+
+			if (excludeReason && excludeDir) {
+				const existing = excluded.get(excludeDir) || { count: 0, size: 0, reason: excludeReason };
+				existing.count++;
+				existing.size += file.size;
+				excluded.set(excludeDir, existing);
+			} else {
+				filtered.push(file);
+			}
+		}
+
+		return { files: filtered, excluded };
+	}
+
+	// State for showing excluded files
+	let excludedDirs = $state<Map<string, { count: number; size: number; reason: string }>>(new Map());
 
 	// File upload handlers
 	async function uploadFiles(files: FileList | File[]) {
@@ -319,15 +434,31 @@
 		try {
 			log('uploadFiles started');
 
+			// Filter out ignored directories and files
+			const { files: filteredFiles, excluded } = filterFiles(files);
+			excludedDirs = excluded;
+
+			if (excluded.size > 0) {
+				const totalExcluded = Array.from(excluded.values()).reduce((sum, e) => sum + e.count, 0);
+				log(`Filtered out ${totalExcluded} files from ${excluded.size} directories`);
+			}
+
+			if (filteredFiles.length === 0) {
+				error = 'No files to upload after filtering. All files were in ignored directories.';
+				return;
+			}
+
 			const formData = new FormData();
 			let totalSize = 0;
-			for (let i = 0; i < files.length; i++) {
-				const file = files[i];
-				log(`append ${i}: ${file.name}`);
-				formData.append('files', file);
+			for (const file of filteredFiles) {
+				const f = file as File & { webkitRelativePath?: string };
+				// Use webkitRelativePath if available (folder upload), otherwise just the name
+				const uploadPath = f.webkitRelativePath || f.name;
+				log(`append: ${uploadPath}`);
+				formData.append('files', file, uploadPath);
 				totalSize += file.size;
 			}
-			log(`sending ${files.length} files (${totalSize} bytes)`);
+			log(`sending ${filteredFiles.length} files (${totalSize} bytes)`);
 
 			// Use absolute URL to ensure we hit the right server
 			const baseUrl = window.location.origin;
@@ -381,6 +512,7 @@
 			if (response.ok) {
 				stagedFiles = [];
 				stagedTotalSize = 0;
+				excludedDirs = new Map();
 			}
 		} catch (e) {
 			console.error('Failed to clear files:', e);
@@ -802,6 +934,35 @@
 						>
 							Process {stagedFiles.length} file{stagedFiles.length !== 1 ? 's' : ''}
 						</button>
+					</div>
+				{/if}
+
+				<!-- Excluded directories notice -->
+				{#if excludedDirs.size > 0}
+					{@const totalExcluded = Array.from(excludedDirs.values()).reduce((sum, e) => sum + e.count, 0)}
+					{@const totalSize = Array.from(excludedDirs.values()).reduce((sum, e) => sum + e.size, 0)}
+					<div class="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-3 sm:p-4">
+						<div class="flex items-start gap-2">
+							<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-yellow-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+							</svg>
+							<div class="flex-1 min-w-0">
+								<p class="text-yellow-200/90 text-sm font-medium">
+									Excluded {totalExcluded} files ({formatSize(totalSize)})
+								</p>
+								<div class="mt-2 flex flex-wrap gap-1.5">
+									{#each [...excludedDirs.entries()].sort((a, b) => b[1].size - a[1].size).slice(0, 6) as [dir, info]}
+										<span class="inline-flex items-center gap-1 px-2 py-0.5 bg-yellow-500/10 rounded text-xs text-yellow-300/70" title="{info.count} files, {formatSize(info.size)} - {info.reason}">
+											<span class="truncate max-w-24">{dir}</span>
+											<span class="text-yellow-400/50">({formatSize(info.size)})</span>
+										</span>
+									{/each}
+									{#if excludedDirs.size > 6}
+										<span class="text-yellow-400/50 text-xs">+{excludedDirs.size - 6} more</span>
+									{/if}
+								</div>
+							</div>
+						</div>
 					</div>
 				{/if}
 
